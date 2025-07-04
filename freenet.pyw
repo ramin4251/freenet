@@ -18,6 +18,9 @@ import sys
 from datetime import datetime
 import winreg
 import qrcode
+import zipfile
+import shutil
+import io
 from PIL import ImageTk, Image
 if sys.platform == 'win32':
     from subprocess import CREATE_NO_WINDOW
@@ -63,6 +66,8 @@ class VPNConfigGUI:
         self.active_threads = []
         self.is_fetching = False
         
+        self.XRAY_CORE_URL = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
+        
         # Configuration - now using a dictionary of mirrors
         self.MIRRORS = {
             "barry-far": "https://raw.githubusercontent.com/barry-far/V2ray-Config/refs/heads/main/All_Configs_Sub.txt",
@@ -85,7 +90,7 @@ class VPNConfigGUI:
         self.TEST_TIMEOUT = 10
         self.SOCKS_PORT = 1080
         self.PING_TEST_URL = "https://old-queen-f906.mynameissajjad.workers.dev/login"
-        self.LATENCY_WORKERS = 100
+        self.LATENCY_WORKERS = 20
         
         # Create temp folder if it doesn't exist
         if not os.path.exists(self.TEMP_FOLDER):
@@ -307,8 +312,37 @@ class VPNConfigGUI:
         # Set initial sash position (adjust 300 to your preferred initial height)
         main_pane.sash_place(0, 0, 300)  # This makes bottom frame start taller
         
+        
+        # --- Menu Bar ---
+        menubar = tk.Menu(self.root)
+        
+        # File menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Exit", command=self.root.quit)
+        menubar.add_cascade(label="File", menu=file_menu)
+        
+        # Options menu
+        options_menu = tk.Menu(menubar, tearoff=0)
+        options_menu.add_command(label="Update Xray Core", command=self.update_xray_core)
+        options_menu.add_command(label="Update GeoFiles", command=self.update_geofiles)
+        menubar.add_cascade(label="Options", menu=options_menu)
+        
+        
+        # Tools menu
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        tools_menu.add_command(label="Clear Terminal", command=self.clear_terminal)
+        menubar.add_cascade(label="Tools", menu=tools_menu)
+        
+        self.root.config(menu=menubar)
+        
     
     
+    def clear_terminal(self):
+        """Clear the terminal output"""
+        self.terminal.config(state=tk.NORMAL)
+        self.terminal.delete('1.0', tk.END)
+        self.terminal.config(state=tk.DISABLED)
+        #self.log("Terminal cleared")
     
     
     def show_mirror_selection(self):
@@ -484,18 +518,28 @@ class VPNConfigGUI:
     def load_best_configs(self):
         """Load best configs from file if it exists and test them"""
         try:
+            # Change button to stop state
+            self.root.after(0, lambda: self.reload_btn.config(
+                text="Stop Loading Configs",
+                style='Stop.TButton',
+                state=tk.NORMAL
+            ))
+            
             if os.path.exists(self.BEST_CONFIGS_FILE):
                 with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
                     # Use a set to avoid duplicates while reading
                     seen = []
                     config_uris = []
                     for line in f:
+                        if self.stop_event.is_set():
+                            break
+                            
                         line = line.strip()
                         if line and line not in seen:
                             seen.append(line)
                             config_uris.append(line)
                     
-                    if config_uris:
+                    if config_uris and not self.stop_event.is_set():
                         # Initialize with default infinite latency (will be updated when tested)
                         self.best_configs = [(uri, float('inf')) for uri in config_uris]
                         self.total_configs = len(config_uris)
@@ -505,11 +549,21 @@ class VPNConfigGUI:
                         self.root.after(0, lambda: self.progress.config(maximum=len(config_uris), value=0))
                         self.log(f"Loaded {len(config_uris)} configs from {self.BEST_CONFIGS_FILE}")
                         
+                        # Immediately update the treeview with the loaded configs
+                        ####### self.root.after(0, self.update_treeview)
+                        
                         # Start testing the loaded configs in a separate thread
                         thread = threading.Thread(target=self._test_pasted_configs_worker, args=(config_uris,), daemon=True)
                         thread.start()
         except Exception as e:
             self.log(f"Error loading best configs: {str(e)}")
+            # Reset button if error occurs
+            self.root.after(0, lambda: self.reload_btn.config(
+                text="Reload Best Configs",
+                style='TButton',
+                state=tk.NORMAL
+            ))
+            self.stop_event.clear()
     
     
     
@@ -517,7 +571,15 @@ class VPNConfigGUI:
     
     def reload_and_test_configs(self):
         """Reload and test configs from best_configs.txt"""
-        self.reload_btn.config(state=tk.DISABLED)
+        if self.reload_btn.cget('text') == "Stop Loading Configs":
+            self.stop_reloading()
+            return
+            
+        self.reload_btn.config(
+            text="Stop Loading Configs",
+            style='Stop.TButton',
+            state=tk.NORMAL
+        )
         self.log("Reloading and testing configs from best_configs.txt...")
         
         # Clear current configs and treeview
@@ -713,8 +775,15 @@ class VPNConfigGUI:
         thread = threading.Thread(target=self._test_pasted_configs_worker, args=(configs,), daemon=True)
         thread.start()
         
+    
+    
+    
     def _test_pasted_configs_worker(self, configs):
         try:
+            # Register this thread
+            with self.thread_lock:
+                self.active_threads.append(threading.current_thread())
+                
             self.total_configs = len(configs)
             self.tested_configs = 0
             self.working_configs = 0
@@ -728,6 +797,12 @@ class VPNConfigGUI:
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.LATENCY_WORKERS) as executor:
                 futures = {executor.submit(self.measure_latency, config): config for config in configs}
                 for future in concurrent.futures.as_completed(futures):
+                    if self.stop_event.is_set():
+                        # Cancel all pending futures
+                        for f in futures:
+                            f.cancel()
+                        break
+                        
                     result = future.result()
                     self.tested_configs += 1
                     all_tested_configs.append(result)  # Store all results
@@ -746,32 +821,88 @@ class VPNConfigGUI:
                             best_configs.append(result)
                             self.working_configs += 1
                             self.log(f"Working config found: {result[1]:.2f}ms")
+                            
+                            # Update the treeview with this new working config
+                            self.best_configs = sorted(best_configs, key=lambda x: x[1])
+                            self.root.after(0, self.update_treeview)
                     
+                    # Update progress and counters
                     self.root.after(0, lambda: self.progress.config(value=self.tested_configs))
                     self.root.after(0, self.update_counters)
             
-            # Update the main best_configs list with the tested configs
-            # Keep only the working ones (latency != inf)
-            self.best_configs = [config for config in best_configs if config[1] != float('inf')]
-            
-            # Sort by latency
-            self.best_configs.sort(key=lambda x: x[1])
-            
-            # Save ALL configs to file (both working and non-working)
-            with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
-                for config_uri, _ in all_tested_configs:
-                    f.write(f"{config_uri}\n")
-            
-            self.root.after(0, self.update_treeview)
-            self.log(f"Testing complete! Found {len(self.best_configs)} working configs")
-            
+            # Only save if not stopped
+            if not self.stop_event.is_set():
+                # Update the main best_configs list with the tested configs
+                # Keep only the working ones (latency != inf)
+                self.best_configs = [config for config in best_configs if config[1] != float('inf')]
+                
+                # Sort by latency
+                self.best_configs.sort(key=lambda x: x[1])
+                
+                # Save ALL configs to file (both working and non-working)
+                with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
+                    for config_uri, _ in all_tested_configs:
+                        f.write(f"{config_uri}\n")
+                
+                self.root.after(0, self.update_treeview)
+                self.log(f"Testing complete! Found {len(self.best_configs)} working configs")
+                
         except Exception as e:
             self.log(f"Error in testing pasted configs: {str(e)}")
         finally:
-            self.root.after(0, lambda: self.fetch_btn.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.reload_btn.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.progress.config(value=0))
-            
+            # Clean up
+            with self.thread_lock:
+                if threading.current_thread() in self.active_threads:
+                    self.active_threads.remove(threading.current_thread())
+                    
+            if not self.stop_event.is_set():
+                # Reset the reload button
+                self.root.after(0, lambda: self.reload_btn.config(
+                    text="Reload Best Configs",
+                    style='TButton',
+                    state=tk.NORMAL
+                ))
+                self.root.after(0, lambda: self.fetch_btn.config(state=tk.NORMAL))
+                self.root.after(0, lambda: self.progress.config(value=0))
+                self.stop_event.clear()  # Clear the stop event
+    
+    
+    def stop_reloading(self):
+        """Stop the reload operation"""
+        self.stop_event.set()
+        
+        # Wait for active threads to finish (with timeout)
+        with self.thread_lock:
+            for thread in self.active_threads[:]:  # Create a copy of the list
+                if thread.is_alive():
+                    thread.join(timeout=1.0)  # Wait up to 1 second for thread to finish
+                    if thread.is_alive():  # If still alive after timeout
+                        self.log(f"Thread {thread.name} didn't stop gracefully")
+        
+        # Clear the active threads list
+        with self.thread_lock:
+            self.active_threads.clear()
+        
+        # Immediately reset all counters and progress bar
+        self.root.after(0, lambda: self.progress.config(value=0))
+        self.root.after(0, lambda: self.reload_btn.config(
+            text="Reload Best Configs",
+            style='TButton',
+            state=tk.NORMAL
+        ))
+        
+        # Reset counters
+        self.tested_configs = 0
+        self.working_configs = 0
+        self.total_configs = 0
+        self.root.after(0, self.update_counters)
+        
+        self.log("Stopped reloading configs")
+        self.stop_event.clear()  # Clear the stop event for future operations
+
+
+
+    
     def copy_selected_configs(self, event=None):
         selected_items = self.tree.selection()
         if not selected_items:
@@ -937,12 +1068,21 @@ class VPNConfigGUI:
             # Stop fetching
             self.stop_fetching()
         
+    
+    
+    
     def _fetch_and_test_worker(self):
         """Worker thread for fetching and testing configs"""
         try:
             # Register this thread
             with self.thread_lock:
                 self.active_threads.append(threading.current_thread())
+            
+            # First load ALL existing configs from file
+            existing_working_configs = []
+            if os.path.exists(self.BEST_CONFIGS_FILE):
+                with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
+                    existing_working_configs = [line.strip() for line in f if line.strip()]
             
             # Fetch configs
             self.log("Fetching configs from GitHub...")
@@ -961,15 +1101,9 @@ class VPNConfigGUI:
             # Update progress bar
             self.root.after(0, lambda: self.progress.config(maximum=len(configs), value=0))
             
-            # Load existing best configs
-            existing_configs = set()
-            if os.path.exists(self.BEST_CONFIGS_FILE):
-                with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
-                    existing_configs = {line.strip() for line in f if line.strip()}
-            
             # Test configs for latency
             self.log("Testing configs for latency...")
-            best_configs = []
+            new_working_configs = []
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.LATENCY_WORKERS) as executor:
                 futures = {executor.submit(self.measure_latency, config): config for config in configs}
@@ -984,41 +1118,38 @@ class VPNConfigGUI:
                     self.tested_configs += 1
                     
                     if result[1] != float('inf'):
-                        # Check if config is not already in best_configs or existing_configs
                         config_uri = result[0]
-                        if (not any(x[0] == config_uri for x in best_configs) and 
-                            config_uri not in existing_configs):
-                            
-                            best_configs.append(result)
+                        # Check if config is not already in new_working_configs
+                        if not any(x[0] == config_uri for x in new_working_configs):
+                            new_working_configs.append(result)
                             self.working_configs += 1
-                            
-                            # Add to existing configs
-                            existing_configs.add(config_uri)
-                            
-                            # Save to file immediately (only working configs)
-                            with open(self.BEST_CONFIGS_FILE, 'a', encoding='utf-8') as f:
-                                f.write(f"{config_uri}\n")
-                                
-                            self.log(f"Working config found: {result[1]:.2f}ms - added to best configs")
+                            self.log(f"Working config found: {result[1]:.2f}ms")
                             
                             # Update treeview with the new config
-                            self.best_configs = sorted(best_configs, key=lambda x: x[1])
+                            self.best_configs = sorted(new_working_configs, key=lambda x: x[1])
                             self.root.after(0, self.update_treeview)
                         
                     # Update progress and counters
                     self.root.after(0, lambda: self.progress.config(value=self.tested_configs))
                     self.root.after(0, self.update_counters)
             
+            # Combine old and new working configs (remove duplicates)
+            all_working_uris = set(existing_working_configs)
+            all_working_uris.update([uri for uri, _ in new_working_configs])
+            
+            # Save ALL working configs to file (both old and new)
+            with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(all_working_uris))
+                
             # Final sort and update
-            best_configs = sorted(best_configs, key=lambda x: x[1])
-            self.best_configs = best_configs
+            self.best_configs = sorted(new_working_configs, key=lambda x: x[1])
             
             # Save working configs (for debugging)
             with open(self.WORKING_CONFIGS_FILE, "w", encoding='utf-8') as f:
-                f.write("\n".join([uri for uri, _ in best_configs]))
+                f.write("\n".join([uri for uri, _ in self.best_configs]))
                 
             self.root.after(0, self.update_treeview)
-            self.log(f"Testing complete! Found {len(best_configs)} working configs")
+            self.log(f"Testing complete! Found {len(new_working_configs)} new working configs")
             
         except Exception as e:
             if not self.stop_event.is_set():
@@ -1065,7 +1196,7 @@ class VPNConfigGUI:
                 config_preview
             ), tags=tags)
             
-        self.log(f"Updated treeview with {max_configs} best configs")
+        #self.log(f"Updated treeview with {max_configs} best configs")
         
     
     
@@ -1450,6 +1581,14 @@ class VPNConfigGUI:
                     "ip": ["geoip:private"],
                     "outboundTag": "direct"
                 }]
+            },
+            "geoip": {
+                "path": "geoip.dat",
+                "code": "geoip.dat"
+            },
+            "geosite": {
+                "path": "dlc.dat",
+                "code": "dlc.dat"
             }
         }
         
@@ -1628,6 +1767,143 @@ class VPNConfigGUI:
         except Exception as e:
             return (config_uri, float('inf'))
 
+    
+    
+    
+    def update_xray_core(self):
+        """Update Xray core executable"""
+        self.log("Starting Xray core update...")
+        thread = threading.Thread(target=self._update_xray_core_worker, daemon=True)
+        thread.start()
+
+    def _update_xray_core_worker(self):
+        """Worker thread for updating Xray core"""
+        try:
+            # Kill any running Xray processes
+            self.kill_existing_xray_processes()
+            
+            self.log("Downloading latest Xray core...")
+            response = requests.get(self.XRAY_CORE_URL, stream=True)
+            response.raise_for_status()
+            
+            # Get the total file size from headers
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            
+            # Save the downloaded zip file
+            zip_path = os.path.join(self.TEMP_FOLDER, "xray_update.zip")
+            with open(zip_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:  # filter out keep-alive new chunks
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        # Calculate progress percentage
+                        progress = (downloaded / total_size) * 100
+                        # Update log with progress
+                        self.log(f"Download progress: {progress:.1f}% ({downloaded}/{total_size} bytes)")
+            
+            self.log("Extracting Xray core...")
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                # Get total number of files for progress tracking
+                file_list = zip_ref.namelist()
+                total_files = len(file_list)
+                extracted_files = 0
+                
+                for file in file_list:
+                    zip_ref.extract(file, self.TEMP_FOLDER)
+                    extracted_files += 1
+                    progress = (extracted_files / total_files) * 100
+                    self.log(f"Extraction progress: {progress:.1f}% ({extracted_files}/{total_files} files)")
+                    
+                    # Check if this is the xray.exe file
+                    if file.lower().endswith('xray.exe'):
+                        # Move it to the main directory
+                        extracted_path = os.path.join(self.TEMP_FOLDER, file)
+                        shutil.move(extracted_path, self.XRAY_PATH)
+            
+            self.log("Xray core updated successfully!")
+            messagebox.showinfo("Success", "Xray core updated successfully!")
+            
+        except Exception as e:
+            self.log(f"Error updating Xray core: {str(e)}")
+            messagebox.showerror("Error", f"Failed to update Xray core: {str(e)}")
+        finally:
+            # Clean up
+            try:
+                os.remove(zip_path)
+            except:
+                pass
+
+    def update_geofiles(self):
+        """Update GeoFiles (geoip.dat and geosite.dat)"""
+        self.log("Starting GeoFiles update...")
+        thread = threading.Thread(target=self._update_geofiles_worker, daemon=True)
+        thread.start()
+
+    
+    
+    
+    def _update_geofiles_worker(self):
+        """Worker thread for updating GeoFiles"""
+        try:
+            # URLs for GeoFiles
+            geoip_url = "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
+            geosite_url = "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+            
+            # Download geoip.dat with progress
+            self.log("Downloading geoip.dat...")
+            response = requests.get(geoip_url, stream=True)
+            response.raise_for_status()
+            
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            chunk_size = 8192
+            
+            with open("geoip.dat", 'wb') as f:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:  # filter out keep-alive new chunks
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        progress = (downloaded / total_size) * 100
+                        self.log(f"geoip.dat: {progress:.1f}% ({downloaded}/{total_size} bytes)")
+            
+            self.log("geoip.dat download complete!")
+            
+            # Download dlc.dat with progress
+            self.log("Downloading dlc.dat...")
+            response = requests.get(geosite_url, stream=True)
+            response.raise_for_status()
+            
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            
+            with open("dlc.dat", 'wb') as f:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        progress = (downloaded / total_size) * 100
+                        self.log(f"dlc.dat: {progress:.1f}% ({downloaded}/{total_size} bytes)")
+            
+            self.log("geosite.dat download complete!")
+            self.log("GeoFiles updated successfully!")
+            messagebox.showinfo("Success", "GeoFiles updated successfully!")
+            
+        except Exception as e:
+            self.log(f"Error updating GeoFiles: {str(e)}")
+            self.log("")
+            self.log("You can manually download the required files:")
+            self.log(f"1. GeoIP file: {geoip_url}")
+            self.log(f"2. Geosite file: {geosite_url}")
+            self.log("")
+            self.log("Instructions:")
+            self.log("1. Download both files using the links above")
+            self.log("2. Place them in the same directory as this program")
+            self.log("3. Make sure they are named exactly:")
+            self.log("   - geoip.dat")
+            self.log("   - dlc.dat")
+            self.log("4. Restart the program if needed")
+    
     
     
     def fetch_configs(self):

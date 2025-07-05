@@ -16,37 +16,41 @@ import threading
 import queue
 import sys
 from datetime import datetime
-import winreg
+import platform
+if platform.system() == "Windows":
+    import winreg
 import qrcode
 import zipfile
 import shutil
 import io
 from PIL import ImageTk, Image
+
 if sys.platform == 'win32':
     from subprocess import CREATE_NO_WINDOW
 
 
 
 def kill_xray_processes():
-        """Kill any existing Xray processes"""
-        try:
-            if sys.platform == 'win32':
-                # Windows implementation
-                import psutil
-                for proc in psutil.process_iter(['name']):
-                    try:
-                        if proc.info['name'] == 'xray.exe':
-                            proc.kill()
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
-            else:
-                # Linux/macOS implementation
-                import signal
-                import subprocess
-                subprocess.run(['pkill', '-f', 'xray'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as e:
-            #self.log(f"Error killing existing Xray processes: {str(e)}")
-            pass
+    """Kill any existing Xray processes (cross-platform)"""
+    try:
+        if sys.platform == 'win32':
+            # Windows implementation
+            import psutil
+            for proc in psutil.process_iter(['name']):
+                try:
+                    if proc.info['name'].lower() == 'xray.exe':
+                        proc.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+        else:
+            # Linux/macOS implementation
+            import signal
+            import subprocess
+            subprocess.run(['pkill', '-f', 'xray'], 
+                         stdout=subprocess.DEVNULL, 
+                         stderr=subprocess.DEVNULL)
+    except Exception as e:
+        self.log(f"Error killing existing Xray processes: {str(e)}")
 
 
 class VPNConfigGUI:
@@ -85,7 +89,12 @@ class VPNConfigGUI:
         
         self.TEMP_FOLDER = os.path.join(os.getcwd(), "temp")
         self.TEMP_CONFIG_FILE = os.path.join(self.TEMP_FOLDER, "temp_config.json")
-        self.XRAY_PATH = os.path.join(os.getcwd(), "xray.exe")  # Windows
+        
+        
+        self.XRAY_PATH = os.path.join(os.getcwd(), "xray.exe" if sys.platform == 'win32' else "xray")
+        
+        
+        
         # For Linux/macOS, use: os.path.join(os.getcwd(), "xray")
         self.TEST_TIMEOUT = 10
         self.SOCKS_PORT = 1080
@@ -528,7 +537,7 @@ class VPNConfigGUI:
             if os.path.exists(self.BEST_CONFIGS_FILE):
                 with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
                     # Use a set to avoid duplicates while reading
-                    seen = []
+                    seen = set()
                     config_uris = []
                     for line in f:
                         if self.stop_event.is_set():
@@ -536,10 +545,20 @@ class VPNConfigGUI:
                             
                         line = line.strip()
                         if line and line not in seen:
-                            seen.append(line)
+                            seen.add(line)
                             config_uris.append(line)
                     
-                    if config_uris and not self.stop_event.is_set():
+                    # Check if file is empty or has no valid configs
+                    if not config_uris:
+                        self.root.after(0, lambda: self.reload_btn.config(
+                            text="Reload Best Configs",
+                            style='TButton',
+                            state=tk.NORMAL
+                        ))
+                        self.log("No configs found in best_configs.txt")
+                        return
+                    
+                    if not self.stop_event.is_set():
                         # Initialize with default infinite latency (will be updated when tested)
                         self.best_configs = [(uri, float('inf')) for uri in config_uris]
                         self.total_configs = len(config_uris)
@@ -548,9 +567,6 @@ class VPNConfigGUI:
                         self.update_counters()
                         self.root.after(0, lambda: self.progress.config(maximum=len(config_uris), value=0))
                         self.log(f"Loaded {len(config_uris)} configs from {self.BEST_CONFIGS_FILE}")
-                        
-                        # Immediately update the treeview with the loaded configs
-                        ####### self.root.after(0, self.update_treeview)
                         
                         # Start testing the loaded configs in a separate thread
                         thread = threading.Thread(target=self._test_pasted_configs_worker, args=(config_uris,), daemon=True)
@@ -644,14 +660,14 @@ class VPNConfigGUI:
     
     
     def kill_existing_xray_processes(self):
-        """Kill any existing Xray processes"""
+        """Kill any existing Xray processes (cross-platform)"""
         try:
             if sys.platform == 'win32':
                 # Windows implementation
                 import psutil
                 for proc in psutil.process_iter(['name']):
                     try:
-                        if proc.info['name'] == 'xray.exe':
+                        if proc.info['name'].lower() == 'xray.exe':
                             proc.kill()
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         pass
@@ -659,7 +675,9 @@ class VPNConfigGUI:
                 # Linux/macOS implementation
                 import signal
                 import subprocess
-                subprocess.run(['pkill', '-f', 'xray'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(['pkill', '-f', 'xray'], 
+                             stdout=subprocess.DEVNULL, 
+                             stderr=subprocess.DEVNULL)
         except Exception as e:
             self.log(f"Error killing existing Xray processes: {str(e)}")
             
@@ -1288,7 +1306,7 @@ class VPNConfigGUI:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                creationflags=CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
                 startupinfo=startupinfo
             )
             
@@ -1386,39 +1404,100 @@ class VPNConfigGUI:
     
     
     def set_proxy(self, proxy_server, port):
+        """Set system proxy settings (cross-platform)"""
         try:
-            key = winreg.HKEY_CURRENT_USER
-            subkey = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-            access = winreg.KEY_WRITE
+            if sys.platform == 'win32':
+                # Windows implementation
+                import winreg
+                key = winreg.HKEY_CURRENT_USER
+                subkey = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+                access = winreg.KEY_WRITE
 
-            with winreg.OpenKey(key, subkey, 0, access) as internet_settings_key:
-                winreg.SetValueEx(internet_settings_key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
-                winreg.SetValueEx(internet_settings_key, "ProxyServer", 0, winreg.REG_SZ, f"{proxy_server}:{port}")
+                with winreg.OpenKey(key, subkey, 0, access) as internet_settings_key:
+                    winreg.SetValueEx(internet_settings_key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
+                    winreg.SetValueEx(internet_settings_key, "ProxyServer", 0, winreg.REG_SZ, f"{proxy_server}:{port}")
             
-            # Open a CMD window and run the xray command
-            #cmd_command = "xray.exe"  # Replace with the actual xray command
-            #subprocess.Popen(["cmd", "/c", cmd_command])
+            elif sys.platform == 'darwin':
+                # macOS implementation
+                networks = subprocess.check_output(["networksetup", "-listallnetworkservices"]).decode('utf-8')
+                for service in networks.split('\n')[1:]:  # Skip first line
+                    if service.strip():
+                        subprocess.run([
+                            "networksetup", "-setwebproxy", service.strip(), 
+                            proxy_server, str(port)
+                        ])
+                        subprocess.run([
+                            "networksetup", "-setsecurewebproxy", service.strip(), 
+                            proxy_server, str(port)
+                        ])
+                        subprocess.run([
+                            "networksetup", "-setsocksfirewallproxy", service.strip(), 
+                            proxy_server, str(port)
+                        ])
             
-            
-            #messagebox.showinfo("Proxy Set", "Proxy settings have been enabled.")
+            elif sys.platform == 'linux':
+                # Linux implementation (GNOME)
+                try:
+                    subprocess.run([
+                        "gsettings", "set", "org.gnome.system.proxy", 
+                        "mode", "manual"
+                    ])
+                    subprocess.run([
+                        "gsettings", "set", "org.gnome.system.proxy.socks", 
+                        "host", proxy_server
+                    ])
+                    subprocess.run([
+                        "gsettings", "set", "org.gnome.system.proxy.socks", 
+                        "port", str(port)
+                    ])
+                except:
+                    self.log("Could not set proxy automatically on Linux. Please set it manually.")
         except Exception as e:
-            #messagebox.showerror("Error", f"An error occurred: {e}")
-            pass
+            self.log(f"Error setting proxy: {str(e)}")
 
+    
+    
+    
     def unset_proxy(self):
+        """Unset system proxy settings (cross-platform)"""
         try:
-            key = winreg.HKEY_CURRENT_USER
-            subkey = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-            access = winreg.KEY_WRITE
+            if sys.platform == 'win32':
+                # Windows implementation
+                import winreg
+                key = winreg.HKEY_CURRENT_USER
+                subkey = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+                access = winreg.KEY_WRITE
 
-            with winreg.OpenKey(key, subkey, 0, access) as internet_settings_key:
-                winreg.SetValueEx(internet_settings_key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
-                winreg.DeleteValue(internet_settings_key, "ProxyServer")
+                with winreg.OpenKey(key, subkey, 0, access) as internet_settings_key:
+                    winreg.SetValueEx(internet_settings_key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+                    winreg.DeleteValue(internet_settings_key, "ProxyServer")
 
-            #messagebox.showinfo("Proxy Unset", "Proxy settings have been disabled.")
+            elif sys.platform == 'darwin':
+                # macOS implementation
+                networks = subprocess.check_output(["networksetup", "-listallnetworkservices"]).decode('utf-8')
+                for service in networks.split('\n')[1:]:  # Skip first line
+                    if service.strip():
+                        subprocess.run([
+                            "networksetup", "-setwebproxystate", service.strip(), "off"
+                        ])
+                        subprocess.run([
+                            "networksetup", "-setsecurewebproxystate", service.strip(), "off"
+                        ])
+                        subprocess.run([
+                            "networksetup", "-setsocksfirewallproxystate", service.strip(), "off"
+                        ])
+            
+            elif sys.platform == 'linux':
+                # Linux implementation (GNOME)
+                try:
+                    subprocess.run([
+                        "gsettings", "set", "org.gnome.system.proxy", 
+                        "mode", "none"
+                    ])
+                except:
+                    self.log("Could not unset proxy automatically on Linux. Please unset it manually.")
         except Exception as e:
-            #messagebox.showerror("Error", f"An error occurred: {e}")
-            pass
+            self.log(f"Error unsetting proxy: {str(e)}")
     
     
     
@@ -1605,12 +1684,57 @@ class VPNConfigGUI:
         query = parse_qs(parsed.query)
         remark = urllib.parse.unquote(parsed.fragment) if parsed.fragment else "Imported Trojan"
         
+        # Extract query parameters with defaults
+        network = query.get("type", ["tcp"])[0]
+        security = "tls"  # Trojan always uses TLS
+        sni = query.get("sni", [""])[0]
+        host = query.get("host", [""])[0]
+        path = query.get("path", [""])[0]
+        header_type = query.get("headerType", ["none"])[0]
+
+        # Configure streamSettings based on network type
+        stream_settings = {
+            "network": network,
+            "security": security,
+            "tlsSettings": {
+                "serverName": sni,
+                "allowInsecure": False  # Always enforce TLS security
+            }
+        }
+
+        # Add transport-specific settings
+        if network == "tcp":
+            stream_settings["tcpSettings"] = {
+                "header": {
+                    "type": header_type,
+                    "request": {
+                        "headers": {
+                            "Host": [host] if host else []
+                        }
+                    }
+                }
+            }
+        elif network == "ws":
+            stream_settings["wsSettings"] = {
+                "path": path,
+                "headers": {
+                    "Host": host
+                }
+            }
+        elif network == "grpc":
+            stream_settings["grpcSettings"] = {
+                "serviceName": path
+            }
+        
         config = {
             "inbounds": [{
                 "port": self.SOCKS_PORT,
                 "listen": "127.0.0.1",
                 "protocol": "socks",
-                "settings": {"udp": True}
+                "settings": {
+                    "udp": True,
+                    "auth": "noauth"
+                }
             }],
             "outbounds": [
                 {
@@ -1619,23 +1743,11 @@ class VPNConfigGUI:
                         "servers": [{
                             "address": server,
                             "port": port,
-                            "password": password
+                            "password": password,
+                            "email": remark  # Optional: Use remark as email identifier
                         }]
                     },
-                    "streamSettings": {
-                        "network": query.get("type", ["tcp"])[0],
-                        "security": "tls",
-                        "tcpSettings": {
-                            "header": {
-                                "type": query.get("headerType", ["none"])[0],
-                                "request": {
-                                    "headers": {
-                                        "Host": [query.get("host", [""])[0]]
-                                    }
-                                }
-                            }
-                        }
-                    },
+                    "streamSettings": stream_settings,
                     "tag": "proxy"
                 },
                 {
@@ -1645,11 +1757,18 @@ class VPNConfigGUI:
             ],
             "routing": {
                 "domainStrategy": "IPOnDemand",
-                "rules": [{
-                    "type": "field",
-                    "ip": ["geoip:private"],
-                    "outboundTag": "direct"
-                }]
+                "rules": [
+                    {
+                        "type": "field",
+                        "ip": ["geoip:private"],
+                        "outboundTag": "direct"
+                    },
+                    {
+                        "type": "field",
+                        "domain": ["geosite:category-ads-all"],
+                        "outboundTag": "block"
+                    }
+                ]
             }
         }
         
@@ -1712,7 +1831,7 @@ class VPNConfigGUI:
                 [self.XRAY_PATH, "run", "-config", temp_config_file],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
                 startupinfo=startupinfo
             )
             
@@ -1917,8 +2036,19 @@ class VPNConfigGUI:
             return []
 
 def main():
+    # Kill any existing Xray processes
     kill_xray_processes()
+    
+    # Create root window
     root = tk.Tk()
+    
+    # Set window title with platform info
+    platform_name = platform.system()
+    if platform_name == "Darwin":
+        platform_name = "macOS"
+    root.title(f"VPN Config Manager ({platform_name})")
+    
+    # Create and run application
     app = VPNConfigGUI(root)
     root.mainloop()
 

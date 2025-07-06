@@ -24,7 +24,7 @@ import zipfile
 import shutil
 import io
 from PIL import ImageTk, Image
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
 if sys.platform == 'win32':
     from subprocess import CREATE_NO_WINDOW
 
@@ -832,8 +832,23 @@ class VPNConfigGUI:
             best_configs = []
             all_tested_configs = []  # Store all tested configs
             
+            # Load existing configs from file to preserve them
+            existing_configs = set()
+            if os.path.exists(self.BEST_CONFIGS_FILE):
+                try:
+                    with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            line = line.strip()
+                            if line:
+                                existing_configs.add(line)
+                except Exception as e:
+                    self.log(f"Error reading existing configs: {str(e)}")
+            
             # Keep track of configs we've successfully saved to file
-            saved_configs = set()
+            # Start with existing configs from file
+            saved_configs = existing_configs.copy()
+            
+            # Also add backup configs if available
             if hasattr(self, 'original_configs_backup') and self.original_configs_backup:
                 saved_configs.update(self.original_configs_backup)
             
@@ -887,42 +902,64 @@ class VPNConfigGUI:
             
             # Final processing - only if not stopped
             if not self.stop_event.is_set() and len(all_tested_configs) > 0:
-                # Update the main best_configs list with the tested configs
-                # Keep only the working ones (latency != inf)
-                self.best_configs = [config for config in best_configs if config[1] != float('inf')]
+                # Load existing working configs from self.best_configs (from previous sessions)
+                # and merge with newly found working configs
+                existing_working_configs = []
+                if hasattr(self, 'best_configs') and self.best_configs:
+                    existing_working_configs = [config for config in self.best_configs if config[1] != float('inf')]
+                
+                # Combine existing working configs with newly found ones
+                all_working_configs = existing_working_configs.copy()
+                
+                # Add new working configs, avoiding duplicates
+                for new_config in best_configs:
+                    if new_config[1] != float('inf'):
+                        # Check if this config already exists in our working configs
+                        existing_index = next((i for i, (uri, _) in enumerate(all_working_configs) if uri == new_config[0]), None)
+                        if existing_index is not None:
+                            # Update if new latency is better
+                            if new_config[1] < all_working_configs[existing_index][1]:
+                                all_working_configs[existing_index] = new_config
+                        else:
+                            # Add new working config
+                            all_working_configs.append(new_config)
+                
+                # Update the main best_configs list with all working configs
+                self.best_configs = all_working_configs
                 
                 # Sort by latency
                 self.best_configs.sort(key=lambda x: x[1])
                 
                 # Final save - all configs have already been saved incrementally
                 self.root.after(0, self.update_treeview)
-                self.log(f"Testing complete! Found {len(self.best_configs)} working configs")
+                self.log(f"Testing complete! Found {len([c for c in best_configs if c[1] != float('inf')])} new working configs")
+                self.log(f"Total working configs: {len(self.best_configs)}")
                 
         except Exception as e:
             self.log(f"Error in testing pasted configs: {str(e)}")
             # On error, try to preserve what we have
-            if hasattr(self, 'original_configs_backup') and self.original_configs_backup:
-                try:
-                    # Read current file state
-                    current_configs = set()
-                    if os.path.exists(self.BEST_CONFIGS_FILE):
-                        with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
-                            for line in f:
-                                line = line.strip()
-                                if line:
-                                    current_configs.add(line)
-                    
-                    # Add original configs
+            try:
+                # Read current file state
+                current_configs = set()
+                if os.path.exists(self.BEST_CONFIGS_FILE):
+                    with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            line = line.strip()
+                            if line:
+                                current_configs.add(line)
+                
+                # Add original configs if available
+                if hasattr(self, 'original_configs_backup') and self.original_configs_backup:
                     current_configs.update(self.original_configs_backup)
-                    
-                    # Save combined configs
-                    with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
-                        for config_uri in sorted(current_configs):
-                            f.write(f"{config_uri}\n")
-                    self.log("Error occurred - configs preserved")
-                except Exception as restore_error:
-                    self.log(f"Failed to preserve configs: {str(restore_error)}")
-                    
+                
+                # Save combined configs
+                with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
+                    for config_uri in sorted(current_configs):
+                        f.write(f"{config_uri}\n")
+                self.log("Error occurred - configs preserved")
+            except Exception as restore_error:
+                self.log(f"Failed to preserve configs: {str(restore_error)}")
+                
         finally:
             # Clean up
             with self.thread_lock:
@@ -937,6 +974,9 @@ class VPNConfigGUI:
             ))
             self.root.after(0, lambda: self.fetch_btn.config(state=tk.NORMAL))
             self.root.after(0, lambda: self.progress.config(value=0))
+    
+    
+    
     
     
     
@@ -1507,6 +1547,8 @@ class VPNConfigGUI:
                 with winreg.OpenKey(key, subkey, 0, access) as internet_settings_key:
                     winreg.SetValueEx(internet_settings_key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
                     winreg.SetValueEx(internet_settings_key, "ProxyServer", 0, winreg.REG_SZ, f"{proxy_server}:{port}")
+                    # Enable "Bypass proxy server for local addresses"
+                    winreg.SetValueEx(internet_settings_key, "ProxyOverride", 0, winreg.REG_SZ, "<local>")
             
             elif sys.platform == 'darwin':
                 # macOS implementation
@@ -1546,9 +1588,9 @@ class VPNConfigGUI:
         except Exception as e:
             self.log(f"Error setting proxy: {str(e)}")
 
-    
-    
-    
+        
+        
+        
     def unset_proxy(self):
         """Unset system proxy settings (cross-platform)"""
         try:
@@ -1561,7 +1603,14 @@ class VPNConfigGUI:
 
                 with winreg.OpenKey(key, subkey, 0, access) as internet_settings_key:
                     winreg.SetValueEx(internet_settings_key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
-                    winreg.DeleteValue(internet_settings_key, "ProxyServer")
+                    try:
+                        winreg.DeleteValue(internet_settings_key, "ProxyServer")
+                    except FileNotFoundError:
+                        pass  # Value doesn't exist, that's fine
+                    try:
+                        winreg.DeleteValue(internet_settings_key, "ProxyOverride")
+                    except FileNotFoundError:
+                        pass  # Value doesn't exist, that's fine
 
             elif sys.platform == 'darwin':
                 # macOS implementation
@@ -2065,66 +2114,208 @@ class VPNConfigGUI:
                 pass
 
     def update_geofiles(self):
-        """Update GeoFiles (geoip.dat and geosite.dat)"""
-        self.log("Starting GeoFiles update...")
+        """Update GeoFiles (geoip.dat and geosite.dat) using multi-threading for each file"""
+        self.log("Starting GeoFiles update with multi-threading...")
         thread = threading.Thread(target=self._update_geofiles_worker, daemon=True)
         thread.start()
 
-    
-    
-    
-    def _update_geofiles_worker(self):
-        """Worker thread for updating GeoFiles"""
+    def _download_file_segmented(self, url, filename, file_description, num_segments=4):
+        """Download a file using multiple segments for faster download"""
         try:
-            # URLs for GeoFiles
-            geoip_url = "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
-            geosite_url = "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+            self.log(f"Starting multi-threaded download of {file_description}...")
             
-            # Download geoip.dat with progress
-            self.log("Downloading geoip.dat...")
-            response = requests.get(geoip_url, stream=True)
+            # Get file size first
+            head_response = requests.head(url)
+            head_response.raise_for_status()
+            total_size = int(head_response.headers.get('content-length', 0))
+            
+            if total_size == 0:
+                # Fall back to normal download if size is unknown
+                return self._download_file_normal(url, filename, file_description)
+            
+            self.log(f"{file_description}: File size {total_size} bytes, downloading with {num_segments} threads...")
+            
+            # Calculate segment size
+            segment_size = total_size // num_segments
+            segments = []
+            
+            # Create segments
+            for i in range(num_segments):
+                start = i * segment_size
+                end = start + segment_size - 1 if i < num_segments - 1 else total_size - 1
+                segments.append((start, end))
+            
+            # Download segments concurrently
+            segment_files = []
+            segment_progress = [0] * num_segments
+            
+            with ThreadPoolExecutor(max_workers=num_segments) as executor:
+                future_to_segment = {
+                    executor.submit(self._download_segment, url, start, end, f"{filename}.part{i}", i, segment_progress): i
+                    for i, (start, end) in enumerate(segments)
+                }
+                
+                # Monitor progress
+                completed_segments = 0
+                while completed_segments < num_segments:
+                    time.sleep(0.5)  # Update every 500ms
+                    total_progress = sum(segment_progress) / num_segments
+                    self.log(f"{file_description}: Overall progress {total_progress:.1f}%")
+                    
+                    for future in list(future_to_segment.keys()):
+                        if future.done():
+                            segment_index = future_to_segment[future]
+                            try:
+                                success, part_filename = future.result()
+                                if success:
+                                    segment_files.append((segment_index, part_filename))
+                                    self.log(f"{file_description}: Thread {segment_index + 1} completed")
+                                else:
+                                    raise Exception(f"Failed to download segment {segment_index}")
+                            except Exception as e:
+                                self.log(f"Error in thread {segment_index}: {str(e)}")
+                                # Clean up and fall back to normal download
+                                for _, part_file in segment_files:
+                                    try:
+                                        os.remove(part_file)
+                                    except:
+                                        pass
+                                return self._download_file_normal(url, filename, file_description)
+                            
+                            del future_to_segment[future]
+                            completed_segments += 1
+            
+            # Combine segments
+            segment_files.sort(key=lambda x: x[0])  # Sort by segment index
+            self.log(f"{file_description}: Combining segments...")
+            with open(filename, 'wb') as outfile:
+                for _, part_filename in segment_files:
+                    with open(part_filename, 'rb') as infile:
+                        outfile.write(infile.read())
+                    os.remove(part_filename)  # Clean up part file
+            
+            self.log(f"{file_description} multi-threaded download complete!")
+            return True, f"{file_description} downloaded successfully"
+            
+        except Exception as e:
+            self.log(f"Multi-threaded download failed for {file_description}, error: {str(e)}")
+            # Fall back to normal download
+            return self._download_file_normal(url, filename, file_description)
+
+    def _download_segment(self, url, start, end, filename, segment_index, progress_array):
+        """Download a specific segment of a file with progress tracking"""
+        try:
+            headers = {'Range': f'bytes={start}-{end}'}
+            response = requests.get(url, headers=headers, stream=True)
+            response.raise_for_status()
+            
+            segment_size = end - start + 1
+            downloaded = 0
+            
+            with open(filename, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        # Update progress for this segment
+                        progress_array[segment_index] = (downloaded / segment_size) * 100
+            
+            return True, filename
+        except Exception as e:
+            return False, str(e)
+
+    def _download_file_normal(self, url, filename, file_description):
+        """Fallback method for normal single-threaded download"""
+        try:
+            self.log(f"Starting normal download of {file_description}...")
+            response = requests.get(url, stream=True)
             response.raise_for_status()
             
             total_size = int(response.headers.get('content-length', 0))
             downloaded = 0
             chunk_size = 8192
             
-            with open("geoip.dat", 'wb') as f:
+            with open(filename, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        progress = (downloaded / total_size) * 100 if total_size > 0 else 0
+                        self.log(f"{file_description}: {progress:.1f}% ({downloaded}/{total_size} bytes)")
+            
+            self.log(f"{file_description} download complete!")
+            return True, f"{file_description} downloaded successfully"
+            
+        except Exception as e:
+            return False, f"Error downloading {file_description}: {str(e)}"
+
+    
+    
+    
+    def _download_file(self, url, filename, file_description):
+        """Download a single file with progress tracking"""
+        try:
+            self.log(f"Starting download of {file_description}...")
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            chunk_size = 8192
+            
+            with open(filename, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=chunk_size):
                     if chunk:  # filter out keep-alive new chunks
                         f.write(chunk)
                         downloaded += len(chunk)
                         progress = (downloaded / total_size) * 100
-                        self.log(f"geoip.dat: {progress:.1f}% ({downloaded}/{total_size} bytes)")
+                        self.log(f"{file_description}: {progress:.1f}% ({downloaded}/{total_size} bytes)")
             
-            self.log("geoip.dat download complete!")
+            self.log(f"{file_description} download complete!")
+            return True, f"{file_description} downloaded successfully"
             
-            # Download dlc.dat with progress
-            self.log("Downloading dlc.dat...")
-            response = requests.get(geosite_url, stream=True)
-            response.raise_for_status()
+        except Exception as e:
+            return False, f"Error downloading {file_description}: {str(e)}"
+    
+    
+    
+    
+    def _update_geofiles_worker(self):
+        """Worker thread for updating GeoFiles using multi-threading for each file"""
+        try:
+            # URLs for GeoFiles
+            geoip_url = "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
+            geosite_url = "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
             
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded = 0
+            # Download geoip.dat with multi-threading
+            self.log("=== Starting geoip.dat download ===")
+            success1, message1 = self._download_file_segmented(geoip_url, "geoip.dat", "geoip.dat", num_segments=4)
             
-            with open("dlc.dat", 'wb') as f:
-                for chunk in response.iter_content(chunk_size=chunk_size):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        progress = (downloaded / total_size) * 100
-                        self.log(f"dlc.dat: {progress:.1f}% ({downloaded}/{total_size} bytes)")
+            if success1:
+                self.log(f"✓ {message1}")
+            else:
+                self.log(f"✗ {message1}")
+                raise Exception(f"Failed to download geoip.dat: {message1}")
             
-            self.log("geosite.dat download complete!")
-            self.log("GeoFiles updated successfully!")
+            # Download dlc.dat with multi-threading
+            self.log("=== Starting dlc.dat download ===")
+            success2, message2 = self._download_file_segmented(geosite_url, "dlc.dat", "dlc.dat", num_segments=4)
+            
+            if success2:
+                self.log(f"✓ {message2}")
+            else:
+                self.log(f"✗ {message2}")
+                raise Exception(f"Failed to download dlc.dat: {message2}")
+            
+            self.log("=== All GeoFiles downloads completed successfully! ===")
             messagebox.showinfo("Success", "GeoFiles updated successfully!")
             
         except Exception as e:
             self.log(f"Error updating GeoFiles: {str(e)}")
             self.log("")
             self.log("You can manually download the required files:")
-            self.log(f"1. GeoIP file: {geoip_url}")
-            self.log(f"2. Geosite file: {geosite_url}")
+            self.log("1. GeoIP file: https://github.com/v2fly/geoip/releases/latest/download/geoip.dat")
+            self.log("2. Geosite file: https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat")
             self.log("")
             self.log("Instructions:")
             self.log("1. Download both files using the links above")
@@ -2133,6 +2324,104 @@ class VPNConfigGUI:
             self.log("   - geoip.dat")
             self.log("   - dlc.dat")
             self.log("4. Restart the program if needed")
+
+    def update_all_concurrently(self):
+        """Update both Xray core and GeoFiles concurrently"""
+        self.log("Starting concurrent update of Xray core and GeoFiles...")
+        
+        # Create threads for both updates
+        xray_thread = threading.Thread(target=self._update_xray_core_worker, daemon=True)
+        geofiles_thread = threading.Thread(target=self._update_geofiles_worker, daemon=True)
+        
+        # Start both threads
+        xray_thread.start()
+        geofiles_thread.start()
+        
+        # Optionally wait for both to complete (if you need to know when they're done)
+        # xray_thread.join()
+        # geofiles_thread.join()
+        
+        self.log("All updates started concurrently!")
+
+    
+    
+    
+    
+    # Enhanced version with download segmentation for even faster downloads
+    def _download_file_segmented(self, url, filename, file_description, num_segments=4):
+        """Download a file using multiple segments for faster download"""
+        try:
+            self.log(f"Starting segmented download of {file_description}...")
+            
+            # Get file size first
+            head_response = requests.head(url)
+            head_response.raise_for_status()
+            total_size = int(head_response.headers.get('content-length', 0))
+            
+            if total_size == 0:
+                # Fall back to normal download if size is unknown
+                return self._download_file(url, filename, file_description)
+            
+            # Calculate segment size
+            segment_size = total_size // num_segments
+            segments = []
+            
+            # Create segments
+            for i in range(num_segments):
+                start = i * segment_size
+                end = start + segment_size - 1 if i < num_segments - 1 else total_size - 1
+                segments.append((start, end))
+            
+            # Download segments concurrently
+            segment_files = []
+            with ThreadPoolExecutor(max_workers=num_segments) as executor:
+                future_to_segment = {
+                    executor.submit(self._download_segment, url, start, end, f"{filename}.part{i}"): i
+                    for i, (start, end) in enumerate(segments)
+                }
+                
+                for future in as_completed(future_to_segment):
+                    segment_index = future_to_segment[future]
+                    try:
+                        success, part_filename = future.result()
+                        if success:
+                            segment_files.append((segment_index, part_filename))
+                            self.log(f"{file_description}: Segment {segment_index + 1}/{num_segments} complete")
+                        else:
+                            raise Exception(f"Failed to download segment {segment_index}")
+                    except Exception as e:
+                        self.log(f"Error downloading segment {segment_index}: {str(e)}")
+                        return False, f"Error downloading {file_description}: {str(e)}"
+            
+            # Combine segments
+            segment_files.sort(key=lambda x: x[0])  # Sort by segment index
+            with open(filename, 'wb') as outfile:
+                for _, part_filename in segment_files:
+                    with open(part_filename, 'rb') as infile:
+                        outfile.write(infile.read())
+                    os.remove(part_filename)  # Clean up part file
+            
+            self.log(f"{file_description} segmented download complete!")
+            return True, f"{file_description} downloaded successfully"
+            
+        except Exception as e:
+            return False, f"Error downloading {file_description}: {str(e)}"
+
+    def _download_segment(self, url, start, end, filename):
+        """Download a specific segment of a file"""
+        try:
+            headers = {'Range': f'bytes={start}-{end}'}
+            response = requests.get(url, headers=headers, stream=True)
+            response.raise_for_status()
+            
+            with open(filename, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            return True, filename
+        except Exception as e:
+            return False, str(e)
     
     
     

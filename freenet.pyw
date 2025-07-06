@@ -540,12 +540,12 @@ class VPNConfigGUI:
             
             if os.path.exists(self.BEST_CONFIGS_FILE):
                 # Store original configs from file to preserve them
-                original_configs = []
+                self.original_configs_backup = []
                 with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
                     for line in f:
                         line = line.strip()
                         if line:
-                            original_configs.append(line)
+                            self.original_configs_backup.append(line)
                 
                 # Only clear if we're not in the middle of a test
                 if not self.stop_event.is_set():
@@ -556,7 +556,7 @@ class VPNConfigGUI:
                 # Use a set to avoid duplicates while reading
                 seen = set()
                 config_uris = []
-                for line in original_configs:
+                for line in self.original_configs_backup:
                     if self.stop_event.is_set():
                         break
                         
@@ -589,8 +589,9 @@ class VPNConfigGUI:
                     self.log(f"Loaded {len(config_uris)} configs from {self.BEST_CONFIGS_FILE}")
                     
                     # Start testing the loaded configs in a separate thread
-                    # Pass both config_uris and original_configs to preserve them
-                    thread = threading.Thread(target=self._test_pasted_configs_worker, args=(config_uris, original_configs), daemon=True)
+                    thread = threading.Thread(target=self._test_pasted_configs_worker, args=(config_uris,), daemon=True)
+                    with self.thread_lock:
+                        self.active_threads.append(thread)
                     thread.start()
 
         except Exception as e:  # Added proper except block
@@ -814,18 +815,13 @@ class VPNConfigGUI:
     
     
     
-    def _test_pasted_configs_worker(self, configs, original_configs=None):
+    def _test_pasted_configs_worker(self, configs):
         """
         Test configs and preserve original configs from file
         Args:
             configs: List of configs to test
-            original_configs: Original configs from file to preserve
         """
         try:
-            # Register this thread
-            with self.thread_lock:
-                self.active_threads.append(threading.current_thread())
-                
             self.total_configs = len(configs)
             self.tested_configs = 0
             self.working_configs = 0
@@ -872,8 +868,8 @@ class VPNConfigGUI:
                     self.root.after(0, lambda: self.progress.config(value=self.tested_configs))
                     self.root.after(0, self.update_counters)
             
-            # Only save if not stopped
-            if not self.stop_event.is_set():
+            # Only save if not stopped AND testing completed successfully
+            if not self.stop_event.is_set() and len(all_tested_configs) > 0:
                 # Update the main best_configs list with the tested configs
                 # Keep only the working ones (latency != inf)
                 self.best_configs = [config for config in best_configs if config[1] != float('inf')]
@@ -881,50 +877,55 @@ class VPNConfigGUI:
                 # Sort by latency
                 self.best_configs.sort(key=lambda x: x[1])
                 
-                # Save configs to file - preserve original configs even if testing was incomplete
+                # Save configs to file - preserve original configs and add new ones
                 configs_to_save = set()
                 
-                # Add original configs first (if provided)
-                if original_configs:
-                    configs_to_save.update(original_configs)
+                # Add original configs first (from backup)
+                if hasattr(self, 'original_configs_backup') and self.original_configs_backup:
+                    configs_to_save.update(self.original_configs_backup)
                 
                 # Add all tested configs (both working and non-working)
                 for config_uri, _ in all_tested_configs:
                     configs_to_save.add(config_uri)
                 
-                # Write to file
-                with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
-                    for config_uri in configs_to_save:
-                        f.write(f"{config_uri}\n")
-                
-                self.root.after(0, self.update_treeview)
-                self.log(f"Testing complete! Found {len(self.best_configs)} working configs")
-            else:
-                # If stopped, preserve original configs
-                if original_configs:
+                # Write to file only if we have configs to save
+                if configs_to_save:
                     with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
-                        for config_uri in original_configs:
+                        for config_uri in sorted(configs_to_save):  # Sort for consistent file format
                             f.write(f"{config_uri}\n")
-                    self.log("Testing stopped - original configs preserved in file")
+                    
+                    self.root.after(0, self.update_treeview)
+                    self.log(f"Testing complete! Found {len(self.best_configs)} working configs")
                 
         except Exception as e:
             self.log(f"Error in testing pasted configs: {str(e)}")
+            # On error, restore original configs to prevent data loss
+            if hasattr(self, 'original_configs_backup') and self.original_configs_backup:
+                try:
+                    with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
+                        for config_uri in self.original_configs_backup:
+                            f.write(f"{config_uri}\n")
+                    self.log("Error occurred - original configs restored")
+                except Exception as restore_error:
+                    self.log(f"Failed to restore original configs: {str(restore_error)}")
+                    
         finally:
             # Clean up
             with self.thread_lock:
                 if threading.current_thread() in self.active_threads:
                     self.active_threads.remove(threading.current_thread())
                     
-            if not self.stop_event.is_set():
-                # Reset the reload button
-                self.root.after(0, lambda: self.reload_btn.config(
-                    text="Reload Best Configs",
-                    style='TButton',
-                    state=tk.NORMAL
-                ))
-                self.root.after(0, lambda: self.fetch_btn.config(state=tk.NORMAL))
-                self.root.after(0, lambda: self.progress.config(value=0))
-                self.stop_event.clear()  # Clear the stop event
+            # Reset the reload button
+            self.root.after(0, lambda: self.reload_btn.config(
+                text="Reload Best Configs",
+                style='TButton',
+                state=tk.NORMAL
+            ))
+            self.root.after(0, lambda: self.fetch_btn.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self.progress.config(value=0))
+    
+    
+    
     
     
     def stop_reloading(self):
@@ -943,6 +944,16 @@ class VPNConfigGUI:
         with self.thread_lock:
             self.active_threads.clear()
         
+        # Restore original configs to file if we have them
+        if hasattr(self, 'original_configs_backup') and self.original_configs_backup:
+            try:
+                with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
+                    for config_uri in self.original_configs_backup:
+                        f.write(f"{config_uri}\n")
+                self.log("Stopped loading - original configs preserved in file")
+            except Exception as e:
+                self.log(f"Error preserving original configs: {str(e)}")
+        
         # Only reset the progress bar and button state, don't clear configs
         self.root.after(0, lambda: self.progress.config(value=0))
         self.root.after(0, lambda: self.reload_btn.config(
@@ -958,8 +969,8 @@ class VPNConfigGUI:
         
         self.root.after(0, self.update_counters)
         
-        self.log("Stopped reloading configs (existing configs preserved)")
         self.stop_event.clear()  # Clear the stop event for future operations
+
 
 
 

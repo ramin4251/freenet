@@ -524,6 +524,10 @@ class VPNConfigGUI:
                 #self.tree_context_menu.grab_release()
                 pass
     
+    
+    
+    
+    
     def load_best_configs(self):
         """Load best configs from file if it exists and test them"""
         try:
@@ -535,43 +539,61 @@ class VPNConfigGUI:
             ))
             
             if os.path.exists(self.BEST_CONFIGS_FILE):
+                # Store original configs from file to preserve them
+                original_configs = []
                 with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
-                    # Use a set to avoid duplicates while reading
-                    seen = set()
-                    config_uris = []
                     for line in f:
-                        if self.stop_event.is_set():
-                            break
-                            
                         line = line.strip()
-                        if line and line not in seen:
-                            seen.add(line)
-                            config_uris.append(line)
-                    
-                    # Check if file is empty or has no valid configs
-                    if not config_uris:
-                        self.root.after(0, lambda: self.reload_btn.config(
-                            text="Reload Best Configs",
-                            style='TButton',
-                            state=tk.NORMAL
-                        ))
-                        self.log("No configs found in best_configs.txt")
-                        return
-                    
-                    if not self.stop_event.is_set():
-                        # Initialize with default infinite latency (will be updated when tested)
-                        self.best_configs = [(uri, float('inf')) for uri in config_uris]
-                        self.total_configs = len(config_uris)
-                        self.tested_configs = 0  # Reset to 0 since we need to test them again
-                        self.working_configs = 0
-                        self.update_counters()
-                        self.root.after(0, lambda: self.progress.config(maximum=len(config_uris), value=0))
-                        self.log(f"Loaded {len(config_uris)} configs from {self.BEST_CONFIGS_FILE}")
+                        if line:
+                            original_configs.append(line)
+                
+                # Only clear if we're not in the middle of a test
+                if not self.stop_event.is_set():
+                    self.best_configs = []
+                    for item in self.tree.get_children():
+                        self.tree.delete(item)
+                
+                # Use a set to avoid duplicates while reading
+                seen = set()
+                config_uris = []
+                for line in original_configs:
+                    if self.stop_event.is_set():
+                        break
                         
-                        # Start testing the loaded configs in a separate thread
-                        thread = threading.Thread(target=self._test_pasted_configs_worker, args=(config_uris,), daemon=True)
-                        thread.start()
-        except Exception as e:
+                    if line and line not in seen:
+                        seen.add(line)
+                        config_uris.append(line)
+                
+                # Check if file is empty or has no valid configs
+                if not config_uris:
+                    self.root.after(0, lambda: self.reload_btn.config(
+                        text="Reload Best Configs",
+                        style='TButton',
+                        state=tk.NORMAL
+                    ))
+                    self.log("No configs found in best_configs.txt")
+                    return
+                
+                if not self.stop_event.is_set():
+                    # Initialize with default infinite latency (will be updated when tested)
+                    # Only add new configs, don't overwrite existing ones
+                    existing_uris = {uri for uri, _ in self.best_configs}
+                    new_configs = [(uri, float('inf')) for uri in config_uris if uri not in existing_uris]
+                    self.best_configs.extend(new_configs)
+                    
+                    self.total_configs = len(config_uris)
+                    self.tested_configs = 0  # Reset to 0 since we need to test them again
+                    self.working_configs = len([c for c in self.best_configs if c[1] != float('inf')])
+                    self.update_counters()
+                    self.root.after(0, lambda: self.progress.config(maximum=len(config_uris), value=0))
+                    self.log(f"Loaded {len(config_uris)} configs from {self.BEST_CONFIGS_FILE}")
+                    
+                    # Start testing the loaded configs in a separate thread
+                    # Pass both config_uris and original_configs to preserve them
+                    thread = threading.Thread(target=self._test_pasted_configs_worker, args=(config_uris, original_configs), daemon=True)
+                    thread.start()
+
+        except Exception as e:  # Added proper except block
             self.log(f"Error loading best configs: {str(e)}")
             # Reset button if error occurs
             self.root.after(0, lambda: self.reload_btn.config(
@@ -598,11 +620,7 @@ class VPNConfigGUI:
         )
         self.log("Reloading and testing configs from best_configs.txt...")
         
-        # Clear current configs and treeview
-        self.best_configs = []
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        
+        # Don't clear best_configs or treeview here - let load_best_configs handle it
         # Load and test configs from file
         self.load_best_configs()
     
@@ -796,7 +814,13 @@ class VPNConfigGUI:
     
     
     
-    def _test_pasted_configs_worker(self, configs):
+    def _test_pasted_configs_worker(self, configs, original_configs=None):
+        """
+        Test configs and preserve original configs from file
+        Args:
+            configs: List of configs to test
+            original_configs: Original configs from file to preserve
+        """
         try:
             # Register this thread
             with self.thread_lock:
@@ -857,13 +881,31 @@ class VPNConfigGUI:
                 # Sort by latency
                 self.best_configs.sort(key=lambda x: x[1])
                 
-                # Save ALL configs to file (both working and non-working)
+                # Save configs to file - preserve original configs even if testing was incomplete
+                configs_to_save = set()
+                
+                # Add original configs first (if provided)
+                if original_configs:
+                    configs_to_save.update(original_configs)
+                
+                # Add all tested configs (both working and non-working)
+                for config_uri, _ in all_tested_configs:
+                    configs_to_save.add(config_uri)
+                
+                # Write to file
                 with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
-                    for config_uri, _ in all_tested_configs:
+                    for config_uri in configs_to_save:
                         f.write(f"{config_uri}\n")
                 
                 self.root.after(0, self.update_treeview)
                 self.log(f"Testing complete! Found {len(self.best_configs)} working configs")
+            else:
+                # If stopped, preserve original configs
+                if original_configs:
+                    with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
+                        for config_uri in original_configs:
+                            f.write(f"{config_uri}\n")
+                    self.log("Testing stopped - original configs preserved in file")
                 
         except Exception as e:
             self.log(f"Error in testing pasted configs: {str(e)}")
@@ -886,14 +928,14 @@ class VPNConfigGUI:
     
     
     def stop_reloading(self):
-        """Stop the reload operation"""
+        """Stop the reload operation without clearing existing configs"""
         self.stop_event.set()
         
         # Wait for active threads to finish (with timeout)
         with self.thread_lock:
             for thread in self.active_threads[:]:  # Create a copy of the list
                 if thread.is_alive():
-                    thread.join(timeout=1.0)  # Wait up to 1 second for thread to finish
+                    thread.join(timeout=2.0)  # Wait up to 2 seconds for thread to finish
                     if thread.is_alive():  # If still alive after timeout
                         self.log(f"Thread {thread.name} didn't stop gracefully")
         
@@ -901,7 +943,7 @@ class VPNConfigGUI:
         with self.thread_lock:
             self.active_threads.clear()
         
-        # Immediately reset all counters and progress bar
+        # Only reset the progress bar and button state, don't clear configs
         self.root.after(0, lambda: self.progress.config(value=0))
         self.root.after(0, lambda: self.reload_btn.config(
             text="Reload Best Configs",
@@ -909,14 +951,16 @@ class VPNConfigGUI:
             state=tk.NORMAL
         ))
         
-        # Reset counters
-        self.tested_configs = 0
-        self.working_configs = 0
-        self.total_configs = 0
+        # Don't reset these counters:
+        # self.tested_configs = 0
+        # self.working_configs = 0
+        # self.total_configs = 0
+        
         self.root.after(0, self.update_counters)
         
-        self.log("Stopped reloading configs")
+        self.log("Stopped reloading configs (existing configs preserved)")
         self.stop_event.clear()  # Clear the stop event for future operations
+
 
 
 
@@ -1047,7 +1091,7 @@ class VPNConfigGUI:
         with self.thread_lock:
             for thread in self.active_threads[:]:  # Create a copy of the list
                 if thread.is_alive():
-                    thread.join(timeout=0.5)  # Shorter timeout
+                    thread.join(timeout=2.0)  # Shorter timeout
                     if thread.is_alive():  # If still alive after timeout
                         self.log(f"Thread {thread.name} didn't stop gracefully")
         
@@ -1769,6 +1813,14 @@ class VPNConfigGUI:
                         "outboundTag": "block"
                     }
                 ]
+            },
+            "geoip": {
+                "path": "geoip.dat",
+                "code": "geoip.dat"
+            },
+            "geosite": {
+                "path": "geosite.dat",
+                "code": "geosite.dat"
             }
         }
         
@@ -1814,6 +1866,18 @@ class VPNConfigGUI:
             
             config = self.parse_protocol(config_uri)
             config['inbounds'][0]['port'] = socks_port
+            
+            
+            # Add DNS settings to the config
+            #config['dns'] = {
+            #    "servers": [
+            #        "8.8.8.8",  # Google DNS
+            #        "1.1.1.1",  # Cloudflare DNS
+            #        "185.51.200.2",
+            #        "178.22.122.100",
+            #        "localhost"
+            #    ]
+            #}
             
             rand_suffix = random.randint(100000, 999999)
             temp_config_file = os.path.join(self.TEMP_FOLDER, f"temp_config_{rand_suffix}.json")

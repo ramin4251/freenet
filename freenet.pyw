@@ -66,12 +66,19 @@ class VPNConfigGUI:
         # Kill any existing Xray processes
         self.kill_existing_xray_processes()
         
+        
+        self.log_queue = queue.Queue()
+        
         self.stop_event = threading.Event()
         self.thread_lock = threading.Lock()
         self.active_threads = []
         self.is_fetching = False
         
-        self.XRAY_CORE_URL = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
+        #self.XRAY_CORE_URL = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
+        
+        self.XRAY_CORE_URL = self._get_xray_core_url()
+        
+        self.XRAY_PATH = "xray.exe" if platform.system() == "Windows" else "xray"
         
         # Configuration - now using a dictionary of mirrors
         self.MIRRORS = {
@@ -99,7 +106,7 @@ class VPNConfigGUI:
         # For Linux/macOS, use: os.path.join(os.getcwd(), "xray")
         self.TEST_TIMEOUT = 10
         self.SOCKS_PORT = 1080
-        self.PING_TEST_URL = "https://old-queen-f906.mynameissajjad.workers.dev/login"
+        self.PING_TEST_URL = "https://facebook.com"
         self.LATENCY_WORKERS = 20
         
         # Create temp folder if it doesn't exist
@@ -114,7 +121,7 @@ class VPNConfigGUI:
         self.connected_config = None  # Track the currently connected config
         self.xray_process = None
         self.is_connected = False
-        self.log_queue = queue.Queue()
+        
         self.total_configs = 0
         self.tested_configs = 0
         self.working_configs = 0
@@ -345,6 +352,146 @@ class VPNConfigGUI:
         
         self.root.config(menu=menubar)
         
+    
+    
+    
+    def _get_xray_core_url(self):
+        """
+        Automatically detect the operating system and architecture
+        and return the appropriate Xray core download URL
+        """
+        system = platform.system().lower()
+        machine = platform.machine().lower()
+        
+        # Base URL for Xray core releases
+        base_url = "https://github.com/XTLS/Xray-core/releases/latest/download/"
+        
+        # Determine the correct filename based on OS and architecture
+        if system == "windows":
+            if machine in ["amd64", "x86_64"]:
+                filename = "Xray-windows-64.zip"
+            elif machine in ["i386", "i686", "x86"]:
+                filename = "Xray-windows-32.zip"
+            elif machine in ["arm64", "aarch64"]:
+                filename = "Xray-windows-arm64-v8a.zip"
+            elif machine.startswith("arm"):
+                filename = "Xray-windows-arm32-v7a.zip"
+            else:
+                # Default to 64-bit for unknown architectures
+                filename = "Xray-windows-64.zip"
+                self.log(f"Unknown Windows architecture: {machine}, defaulting to 64-bit")
+        
+        elif system == "linux":
+            if machine in ["amd64", "x86_64"]:
+                filename = "Xray-linux-64.zip"
+            elif machine in ["i386", "i686", "x86"]:
+                filename = "Xray-linux-32.zip"
+            elif machine in ["arm64", "aarch64"]:
+                filename = "Xray-linux-arm64-v8a.zip"
+            elif machine.startswith("arm"):
+                # Check for specific ARM versions
+                if "v7" in machine or "armv7" in machine:
+                    filename = "Xray-linux-arm32-v7a.zip"
+                elif "v6" in machine or "armv6" in machine:
+                    filename = "Xray-linux-arm32-v6.zip"
+                elif "v5" in machine or "armv5" in machine:
+                    filename = "Xray-linux-arm32-v5.zip"
+                else:
+                    filename = "Xray-linux-arm32-v7a.zip"  # Default ARM
+            elif machine in ["mips", "mips64"]:
+                filename = "Xray-linux-mips64.zip"
+            elif machine in ["mipsel", "mips64el"]:
+                filename = "Xray-linux-mips64le.zip"
+            elif machine in ["ppc64", "ppc64le"]:
+                filename = "Xray-linux-ppc64le.zip"
+            elif machine in ["riscv64"]:
+                filename = "Xray-linux-riscv64.zip"
+            elif machine in ["s390x"]:
+                filename = "Xray-linux-s390x.zip"
+            elif machine in ["loongarch64", "loong64"]:
+                filename = "Xray-linux-loong64.zip"
+            else:
+                # Default to 64-bit for unknown architectures
+                filename = "Xray-linux-64.zip"
+                self.log(f"Unknown Linux architecture: {machine}, defaulting to 64-bit")
+        
+        elif system == "darwin":  # macOS
+            if machine in ["arm64", "aarch64"]:
+                filename = "Xray-macos-arm64-v8a.zip"
+            elif machine in ["amd64", "x86_64"]:
+                filename = "Xray-macos-64.zip"
+            else:
+                # Default to Intel 64-bit for unknown architectures
+                filename = "Xray-macos-64.zip"
+                self.log(f"Unknown macOS architecture: {machine}, defaulting to Intel 64-bit")
+        
+        elif system == "freebsd":
+            if machine in ["amd64", "x86_64"]:
+                filename = "Xray-freebsd-64.zip"
+            elif machine in ["i386", "i686", "x86"]:
+                filename = "Xray-freebsd-32.zip"
+            elif machine in ["arm64", "aarch64"]:
+                filename = "Xray-freebsd-arm64-v8a.zip"
+            elif machine.startswith("arm"):
+                filename = "Xray-freebsd-arm32-v7a.zip"
+            else:
+                filename = "Xray-freebsd-64.zip"
+                self.log(f"Unknown FreeBSD architecture: {machine}, defaulting to 64-bit")
+        
+        elif system == "openbsd":
+            if machine in ["amd64", "x86_64"]:
+                filename = "Xray-openbsd-64.zip"
+            elif machine in ["i386", "i686", "x86"]:
+                filename = "Xray-openbsd-32.zip"
+            elif machine in ["arm64", "aarch64"]:
+                filename = "Xray-openbsd-arm64-v8a.zip"
+            elif machine.startswith("arm"):
+                filename = "Xray-openbsd-arm32-v7a.zip"
+            else:
+                filename = "Xray-openbsd-64.zip"
+                self.log(f"Unknown OpenBSD architecture: {machine}, defaulting to 64-bit")
+        
+        else:
+            # Unsupported OS, default to Linux 64-bit
+            filename = "Xray-linux-64.zip"
+            self.log(f"Unsupported OS: {system}, defaulting to Linux 64-bit")
+        
+        full_url = base_url + filename
+        #self.log(f"Detected OS: {system}, Architecture: {machine}")
+        #self.log(f"Selected Xray core URL: {full_url}")
+        
+        return full_url
+    
+    
+    
+    
+    
+    def get_system_info(self):
+        """
+        Get detailed system information for debugging
+        """
+        info = {
+            "system": platform.system(),
+            "machine": platform.machine(),
+            "processor": platform.processor(),
+            "architecture": platform.architecture(),
+            "platform": platform.platform(),
+            "python_version": sys.version,
+            "selected_url": self.XRAY_CORE_URL
+        }
+        return info
+    
+    
+    
+    def log_system_info(self):
+        """
+        Log detailed system information
+        """
+        info = self.get_system_info()
+        self.log("=== System Information ===")
+        for key, value in info.items():
+            self.log(f"{key}: {value}")
+        self.log("=========================")
     
     
     def clear_terminal(self):
@@ -2053,6 +2200,7 @@ class VPNConfigGUI:
     def update_xray_core(self):
         """Update Xray core executable"""
         self.log("Starting Xray core update...")
+        self.log_system_info()  # Log system info before updating
         thread = threading.Thread(target=self._update_xray_core_worker, daemon=True)
         thread.start()
 
@@ -2063,6 +2211,8 @@ class VPNConfigGUI:
             self.kill_existing_xray_processes()
             
             self.log("Downloading latest Xray core...")
+            self.log(f"Using URL: {self.XRAY_CORE_URL}")
+            
             response = requests.get(self.XRAY_CORE_URL, stream=True)
             response.raise_for_status()
             
@@ -2072,13 +2222,17 @@ class VPNConfigGUI:
             
             # Save the downloaded zip file
             zip_path = os.path.join(self.TEMP_FOLDER, "xray_update.zip")
+            
+            # Create temp folder if it doesn't exist
+            os.makedirs(self.TEMP_FOLDER, exist_ok=True)
+            
             with open(zip_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:  # filter out keep-alive new chunks
                         f.write(chunk)
                         downloaded += len(chunk)
                         # Calculate progress percentage
-                        progress = (downloaded / total_size) * 100
+                        progress = (downloaded / total_size) * 100 if total_size > 0 else 0
                         # Update log with progress
                         self.log(f"Download progress: {progress:.1f}% ({downloaded}/{total_size} bytes)")
             
@@ -2089,17 +2243,24 @@ class VPNConfigGUI:
                 total_files = len(file_list)
                 extracted_files = 0
                 
+                # Determine the correct executable name based on OS
+                executable_name = "xray.exe" if platform.system() == "Windows" else "xray"
+                
                 for file in file_list:
                     zip_ref.extract(file, self.TEMP_FOLDER)
                     extracted_files += 1
                     progress = (extracted_files / total_files) * 100
                     self.log(f"Extraction progress: {progress:.1f}% ({extracted_files}/{total_files} files)")
                     
-                    # Check if this is the xray.exe file
-                    if file.lower().endswith('xray.exe'):
+                    # Check if this is the xray executable file
+                    if file.lower().endswith(executable_name.lower()) or file.lower() == executable_name.lower():
                         # Move it to the main directory
                         extracted_path = os.path.join(self.TEMP_FOLDER, file)
                         shutil.move(extracted_path, self.XRAY_PATH)
+                        
+                        # Make executable on Unix-like systems
+                        if platform.system() != "Windows":
+                            os.chmod(self.XRAY_PATH, 0o755)
             
             self.log("Xray core updated successfully!")
             messagebox.showinfo("Success", "Xray core updated successfully!")
@@ -2113,7 +2274,11 @@ class VPNConfigGUI:
                 os.remove(zip_path)
             except:
                 pass
-
+    
+    
+    
+    
+    
     def update_geofiles(self):
         """Update GeoFiles (geoip.dat and geosite.dat) using multi-threading for each file"""
         self.log("Starting GeoFiles update with multi-threading...")

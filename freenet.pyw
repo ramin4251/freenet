@@ -832,6 +832,11 @@ class VPNConfigGUI:
             best_configs = []
             all_tested_configs = []  # Store all tested configs
             
+            # Keep track of configs we've successfully saved to file
+            saved_configs = set()
+            if hasattr(self, 'original_configs_backup') and self.original_configs_backup:
+                saved_configs.update(self.original_configs_backup)
+            
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.LATENCY_WORKERS) as executor:
                 futures = {executor.submit(self.measure_latency, config): config for config in configs}
                 for future in concurrent.futures.as_completed(futures):
@@ -844,6 +849,9 @@ class VPNConfigGUI:
                     result = future.result()
                     self.tested_configs += 1
                     all_tested_configs.append(result)  # Store all results
+                    
+                    # Add this config to our saved set (whether working or not)
+                    saved_configs.add(result[0])
                     
                     if result[1] != float('inf'):
                         # Check if this config is already in best_configs (from current testing session)
@@ -864,11 +872,20 @@ class VPNConfigGUI:
                             self.best_configs = sorted(best_configs, key=lambda x: x[1])
                             self.root.after(0, self.update_treeview)
                     
+                    # Incrementally save configs to file to prevent loss on stop
+                    # This ensures that even if stopped, we don't lose progress
+                    try:
+                        with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
+                            for config_uri in sorted(saved_configs):
+                                f.write(f"{config_uri}\n")
+                    except Exception as save_error:
+                        self.log(f"Error saving progress: {str(save_error)}")
+                    
                     # Update progress and counters
                     self.root.after(0, lambda: self.progress.config(value=self.tested_configs))
                     self.root.after(0, self.update_counters)
             
-            # Only save if not stopped AND testing completed successfully
+            # Final processing - only if not stopped
             if not self.stop_event.is_set() and len(all_tested_configs) > 0:
                 # Update the main best_configs list with the tested configs
                 # Keep only the working ones (latency != inf)
@@ -877,37 +894,34 @@ class VPNConfigGUI:
                 # Sort by latency
                 self.best_configs.sort(key=lambda x: x[1])
                 
-                # Save configs to file - preserve original configs and add new ones
-                configs_to_save = set()
-                
-                # Add original configs first (from backup)
-                if hasattr(self, 'original_configs_backup') and self.original_configs_backup:
-                    configs_to_save.update(self.original_configs_backup)
-                
-                # Add all tested configs (both working and non-working)
-                for config_uri, _ in all_tested_configs:
-                    configs_to_save.add(config_uri)
-                
-                # Write to file only if we have configs to save
-                if configs_to_save:
-                    with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
-                        for config_uri in sorted(configs_to_save):  # Sort for consistent file format
-                            f.write(f"{config_uri}\n")
-                    
-                    self.root.after(0, self.update_treeview)
-                    self.log(f"Testing complete! Found {len(self.best_configs)} working configs")
+                # Final save - all configs have already been saved incrementally
+                self.root.after(0, self.update_treeview)
+                self.log(f"Testing complete! Found {len(self.best_configs)} working configs")
                 
         except Exception as e:
             self.log(f"Error in testing pasted configs: {str(e)}")
-            # On error, restore original configs to prevent data loss
+            # On error, try to preserve what we have
             if hasattr(self, 'original_configs_backup') and self.original_configs_backup:
                 try:
+                    # Read current file state
+                    current_configs = set()
+                    if os.path.exists(self.BEST_CONFIGS_FILE):
+                        with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
+                            for line in f:
+                                line = line.strip()
+                                if line:
+                                    current_configs.add(line)
+                    
+                    # Add original configs
+                    current_configs.update(self.original_configs_backup)
+                    
+                    # Save combined configs
                     with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
-                        for config_uri in self.original_configs_backup:
+                        for config_uri in sorted(current_configs):
                             f.write(f"{config_uri}\n")
-                    self.log("Error occurred - original configs restored")
+                    self.log("Error occurred - configs preserved")
                 except Exception as restore_error:
-                    self.log(f"Failed to restore original configs: {str(restore_error)}")
+                    self.log(f"Failed to preserve configs: {str(restore_error)}")
                     
         finally:
             # Clean up
@@ -944,15 +958,36 @@ class VPNConfigGUI:
         with self.thread_lock:
             self.active_threads.clear()
         
-        # Restore original configs to file if we have them
+        # Preserve all configs that are currently in the file
+        # Read current state of the file (which may have been updated during testing)
+        current_configs = set()
+        if os.path.exists(self.BEST_CONFIGS_FILE):
+            try:
+                with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            current_configs.add(line)
+            except Exception as e:
+                self.log(f"Error reading current configs: {str(e)}")
+        
+        # Add original configs from backup if they exist
         if hasattr(self, 'original_configs_backup') and self.original_configs_backup:
+            current_configs.update(self.original_configs_backup)
+        
+        # Add any configs from the current best_configs list
+        for config_uri, _ in self.best_configs:
+            current_configs.add(config_uri)
+        
+        # Write back all configs to preserve them
+        if current_configs:
             try:
                 with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
-                    for config_uri in self.original_configs_backup:
+                    for config_uri in sorted(current_configs):  # Sort for consistent format
                         f.write(f"{config_uri}\n")
-                self.log("Stopped loading - original configs preserved in file")
+                self.log("Stopped loading - all configs preserved in file")
             except Exception as e:
-                self.log(f"Error preserving original configs: {str(e)}")
+                self.log(f"Error preserving configs: {str(e)}")
         
         # Only reset the progress bar and button state, don't clear configs
         self.root.after(0, lambda: self.progress.config(value=0))
@@ -970,6 +1005,7 @@ class VPNConfigGUI:
         self.root.after(0, self.update_counters)
         
         self.stop_event.clear()  # Clear the stop event for future operations
+
 
 
 

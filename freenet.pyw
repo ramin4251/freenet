@@ -23,6 +23,7 @@ import qrcode
 import zipfile
 import shutil
 import io
+from contextlib import contextmanager
 from PIL import ImageTk, Image
 from concurrent.futures import ThreadPoolExecutor, as_completed
 if sys.platform == 'win32':
@@ -2426,14 +2427,131 @@ class VPNConfigGUI:
     
     
     def fetch_configs(self):
+        max_retries = 3
+        retry_delay = 2  # seconds
+        
+        # Different approaches to try
+        strategies = [
+            ("System default", None),
+            ("Google DNS", self._try_with_google_dns),
+            ("Cloudflare DNS", self._try_with_cloudflare_dns),
+            ("Direct IP", self._try_with_direct_ip),
+        ]
+        
+        for strategy_name, strategy_func in strategies:
+            self.log(f"Trying strategy: {strategy_name}")
+            
+            for attempt in range(max_retries):
+                try:
+                    if strategy_func:
+                        response = strategy_func()
+                    else:
+                        response = requests.get(self.CONFIGS_URL, timeout=10)
+                    
+                    response.raise_for_status()
+                    response.encoding = 'utf-8'
+                    configs = [line.strip() for line in response.text.splitlines() if line.strip()]
+                    self.log(f"Successfully fetched configs using: {strategy_name}")
+                    return configs[::-1]
+                    
+                except requests.exceptions.Timeout:
+                    if attempt < max_retries - 1:
+                        self.log(f"Timeout, retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                        time.sleep(retry_delay)
+                        continue
+                    self.log(f"Max retries reached with {strategy_name}")
+                    break
+                except Exception as e:
+                    self.log(f"Error with {strategy_name}: {str(e)}")
+                    break
+        
+        self.log("All strategies failed")
+        return []
+
+    def _try_with_google_dns(self):
+        """Try request with Google DNS via system DNS change"""
+        return self._try_with_custom_dns(['8.8.8.8', '8.8.4.4'])
+
+    def _try_with_cloudflare_dns(self):
+        """Try request with Cloudflare DNS via system DNS change"""
+        return self._try_with_custom_dns(['1.1.1.1', '1.0.0.1'])
+
+    def _try_with_custom_dns(self, dns_servers):
+        """Try request with custom DNS servers"""
+        # Create a custom session with DNS override
+        session = requests.Session()
+        
+        # Try to resolve hostname manually using custom DNS
         try:
-            response = requests.get(self.CONFIGS_URL)
-            response.raise_for_status()
-            response.encoding = 'utf-8'  # Explicitly set UTF-8 encoding
-            configs = [line.strip() for line in response.text.splitlines() if line.strip()]
-            return configs[::-1]  # Reverse the list before returning
-        except Exception as e:
-            return []
+            hostname = self.CONFIGS_URL.split('//')[1].split('/')[0]
+            ip = self._resolve_hostname(hostname, dns_servers[0])
+            
+            # Replace hostname with IP in URL
+            url_with_ip = self.CONFIGS_URL.replace(hostname, ip)
+            
+            # Add Host header to maintain virtual hosting
+            headers = {'Host': hostname}
+            
+            return session.get(url_with_ip, headers=headers, timeout=10)
+        except:
+            # Fallback to normal request
+            return session.get(self.CONFIGS_URL, timeout=10)
+
+    def _resolve_hostname(self, hostname, dns_server):
+        """Resolve hostname using specific DNS server"""
+        try:
+            import dns.resolver
+            resolver = dns.resolver.Resolver()
+            resolver.nameservers = [dns_server]
+            result = resolver.resolve(hostname, 'A')
+            return str(result[0])
+        except:
+            # Fallback to system tools
+            return self._resolve_with_system_tools(hostname, dns_server)
+
+    def _resolve_with_system_tools(self, hostname, dns_server):
+        """Resolve hostname using system tools as fallback"""
+        try:
+            if platform.system() == "Windows":
+                result = subprocess.run(['nslookup', hostname, dns_server], 
+                                      capture_output=True, text=True, timeout=5)
+                # Parse nslookup output
+                for line in result.stdout.split('\n'):
+                    if 'Address:' in line and dns_server not in line:
+                        return line.split(':')[1].strip()
+            else:
+                result = subprocess.run(['dig', f'@{dns_server}', hostname, '+short'], 
+                                      capture_output=True, text=True, timeout=5)
+                ip = result.stdout.strip().split('\n')[0]
+                if ip and not ip.startswith(';'):
+                    return ip
+        except:
+            pass
+        
+        # Final fallback - use socket with default DNS
+        return socket.gethostbyname(hostname)
+
+    def _try_with_direct_ip(self):
+        """Try connecting to GitHub's IP directly"""
+        github_ips = [
+            '140.82.112.3',  # Common GitHub IP
+            '140.82.114.3',  # Alternative GitHub IP
+            '140.82.113.3',  # Another GitHub IP
+            '140.82.121.4' 
+        ]
+        
+        hostname = self.CONFIGS_URL.split('//')[1].split('/')[0]
+        
+        for ip in github_ips:
+            try:
+                url_with_ip = self.CONFIGS_URL.replace(hostname, ip)
+                headers = {'Host': hostname}
+                response = requests.get(url_with_ip, headers=headers, timeout=10)
+                return response
+            except:
+                continue
+        
+        raise Exception("All direct IP attempts failed")
 
 def main():
     # Kill any existing Xray processes

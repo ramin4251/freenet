@@ -124,11 +124,13 @@ class VPNConfigGUI:
         self.root.title("VPN Config Manager")
         self.root.geometry("600x600+620+20")
         
+        
+        self.latency_timeout = 10
         self.test_url = "https://www.hero-wars.com"
         self.current_version = "1.7"
 
         # Define BASE_DIR at the beginning of __init__
-        self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        self.BASE_DIR = os.getcwd()
 
         
         # Configure dark theme
@@ -147,9 +149,9 @@ class VPNConfigGUI:
         
         #self.XRAY_CORE_URL = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
         
-        self.XRAY_CORE_URL = self._get_xray_core_url()
         
-        self.XRAY_PATH = "xray.exe" if platform.system() == "Windows" else "xray"
+        
+        
         
         # Configuration - now using a dictionary of mirrors
         self.MIRRORS = {
@@ -169,8 +171,11 @@ class VPNConfigGUI:
         self.TEMP_FOLDER = os.path.join(self.BASE_DIR, "temp")
         self.TEMP_CONFIG_FILE = os.path.join(self.TEMP_FOLDER, "temp_config.json")
         
+        self.XRAY_CORE_URL = self._get_xray_core_url()
         
-        self.XRAY_PATH = os.path.join(self.BASE_DIR, "xray.exe" if sys.platform == 'win32' else "xray")
+        self.XRAY_PATH = "xray.exe" if platform.system() == "Windows" else "xray"
+        
+        self.XRAY_PATH = os.path.join(self.BASE_DIR, self.XRAY_PATH)
         
         
         
@@ -2387,7 +2392,7 @@ class VPNConfigGUI:
             
             # Use the selected test URL, fallback to default if not set
             test_url = getattr(self, 'test_url', 'https://hero-wars.com')
-            timeout = getattr(self, 'latency_timeout', 10)
+            self.timeout_delay = getattr(self, 'latency_timeout', 10)
             
             rand_suffix = random.randint(100000, 999999)
             temp_config_file = os.path.join(self.TEMP_FOLDER, f"temp_config_{rand_suffix}.json")
@@ -2431,7 +2436,7 @@ class VPNConfigGUI:
                 response = requests.get(
                     test_url,
                     proxies=proxies,
-                    timeout=timeout,
+                    timeout=self.timeout_delay,
                     headers={
                         'Cache-Control': 'no-cache',
                         'Connection': 'close',

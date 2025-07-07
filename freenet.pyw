@@ -127,11 +127,13 @@ class VPNConfigGUI:
         
         self.latency_timeout = 10
         self.test_url = "https://www.hero-wars.com"
-        self.current_version = "1.7"
+        
+        
+        self.current_version = "1.8"
 
         # Define BASE_DIR at the beginning of __init__
         self.BASE_DIR = os.getcwd()
-
+        self.FREENET_PATH = self.BASE_DIR
         
         # Configure dark theme
         self.setup_dark_theme()
@@ -2556,7 +2558,7 @@ class VPNConfigGUI:
                             os.chmod(versioned_path, 0o755)
                         
                         # Update the freenet path to point to the new version
-                        self.FREENET_PATH = versioned_path
+                        #self.FREENET_PATH = versioned_path
                         self.log(f"Freenet executable renamed to: {new_executable_name}")
             
             # Update current version

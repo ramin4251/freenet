@@ -59,6 +59,10 @@ class VPNConfigGUI:
         self.root = root
         self.root.title("VPN Config Manager")
         self.root.geometry("600x600+620+20")
+
+        # Define BASE_DIR at the beginning of __init__
+        self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
         
         # Configure dark theme
         self.setup_dark_theme()
@@ -95,11 +99,11 @@ class VPNConfigGUI:
         
         
         
-        self.TEMP_FOLDER = os.path.join(os.getcwd(), "temp")
+        self.TEMP_FOLDER = os.path.join(self.BASE_DIR, "temp")
         self.TEMP_CONFIG_FILE = os.path.join(self.TEMP_FOLDER, "temp_config.json")
         
         
-        self.XRAY_PATH = os.path.join(os.getcwd(), "xray.exe" if sys.platform == 'win32' else "xray")
+        self.XRAY_PATH = os.path.join(self.BASE_DIR, "xray.exe" if sys.platform == 'win32' else "xray")
         
         
         

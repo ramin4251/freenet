@@ -23,11 +23,75 @@ import qrcode
 import zipfile
 import shutil
 import io
+import msvcrt  # Windows
 from contextlib import contextmanager
 from PIL import ImageTk, Image
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import psutil
+import atexit
 if sys.platform == 'win32':
     from subprocess import CREATE_NO_WINDOW
+
+
+
+def get_lock_file_path():
+    """Returns the path to the lock file (platform-specific)."""
+    if platform.system() == "Windows":
+        return os.path.join(os.getenv("TEMP"), "vpn_config_manager.lock")
+    else:  # Linux/macOS
+        return "/tmp/vpn_config_manager.lock"
+
+def cleanup_lock_file():
+    """Removes the lock file on program exit."""
+    lock_file = get_lock_file_path()
+    if os.path.exists(lock_file):
+        try:
+            os.remove(lock_file)
+        except:
+            pass  # Ignore errors (file might be locked)
+
+def is_program_running():
+    """Checks if another instance is running."""
+    lock_file = get_lock_file_path()
+
+    # Check if the lock file exists and is stale (from a crashed instance)
+    if os.path.exists(lock_file):
+        try:
+            with open(lock_file, 'r') as f:
+                pid = int(f.read().strip())
+            
+            # Check if the process that created the lock is still running
+            if platform.system() == "Windows":
+                # Windows: Try to check if the process exists (requires psutil)
+                try:
+                    
+                    if psutil.pid_exists(pid):
+                        return True  # Another instance is running
+                except (ImportError, psutil.NoSuchProcess):
+                    pass  # Assume stale lock
+            else:
+                # Linux/macOS: Use os.kill to check the process
+                try:
+                    os.kill(pid, 0)  # Doesn't kill, just checks existence
+                    return True  # Another instance is running
+                except OSError:
+                    pass  # Process doesn't exist (stale lock)
+            
+            # If we get here, the lock is stale → remove it
+            os.remove(lock_file)
+        except (ValueError, OSError):
+            # Lock file is corrupt → remove it
+            os.remove(lock_file)
+
+    # Create a new lock file
+    try:
+        with open(lock_file, 'w') as f:
+            f.write(str(os.getpid()))
+        # Register cleanup on exit
+        atexit.register(cleanup_lock_file)
+        return False  # No other instance is running
+    except (OSError, IOError):
+        return True  # Couldn't create lock file (another instance running)
 
 
 
@@ -59,6 +123,9 @@ class VPNConfigGUI:
         self.root = root
         self.root.title("VPN Config Manager")
         self.root.geometry("600x600+620+20")
+        
+        self.test_url = "https://www.hero-wars.com"
+        self.current_version = "1.7"
 
         # Define BASE_DIR at the beginning of __init__
         self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -110,7 +177,7 @@ class VPNConfigGUI:
         # For Linux/macOS, use: os.path.join(os.getcwd(), "xray")
         self.TEST_TIMEOUT = 10
         self.SOCKS_PORT = 1080
-        self.PING_TEST_URL = "https://facebook.com"
+        self.PING_TEST_URL = "https://youtube.com"
         self.LATENCY_WORKERS = 20
         
         # Create temp folder if it doesn't exist
@@ -344,6 +411,9 @@ class VPNConfigGUI:
         
         # Options menu
         options_menu = tk.Menu(menubar, tearoff=0)
+        
+        
+        options_menu.add_command(label="Update freenet", command=self.update_freenet)
         options_menu.add_command(label="Update Xray Core", command=self.update_xray_core)
         options_menu.add_command(label="Update GeoFiles", command=self.update_geofiles)
         menubar.add_cascade(label="Options", menu=options_menu)
@@ -515,7 +585,7 @@ class VPNConfigGUI:
         
         # Center the window
         window_width = 300
-        window_height = 200
+        window_height = 250
         screen_width = self.mirror_window.winfo_screenwidth()
         screen_height = self.mirror_window.winfo_screenheight()
         x = int((screen_width/2) - (window_width/2))
@@ -572,6 +642,24 @@ class VPNConfigGUI:
         self.thread_combo.set("100")  # Default to 100
         self.thread_combo.pack(pady=5, padx=20, fill=tk.X)
         
+        
+        # Test URL selection
+        ttk.Label(self.mirror_window, text="Test URL:").pack(pady=(10, 0))
+        
+        self.test_url_combo = ttk.Combobox(
+            self.mirror_window,
+            values=[
+            "https://hero-wars.com",
+            "https://web.telegram.org",
+            "https://facebook.com",
+            "https://netflix.com"
+            ],
+            state="readonly",
+            style='TCombobox'
+        )
+        self.test_url_combo.set("https://hero-wars.com")  # Default
+        self.test_url_combo.pack(pady=5, padx=20, fill=tk.X)
+        
         # Apply dark background to the dropdown lists
         self.mirror_window.option_add('*TCombobox*Listbox.background', '#3e3e3e')
         self.mirror_window.option_add('*TCombobox*Listbox.foreground', '#ffffff')
@@ -604,6 +692,8 @@ class VPNConfigGUI:
         self.mirror_window.transient(self.root)
         self.mirror_window.wait_window(self.mirror_window)
     
+    
+    
     def cancel_mirror_selection(self):
         """Handle cancel or window close without selection"""
         if hasattr(self, 'mirror_window') and self.mirror_window:
@@ -622,9 +712,10 @@ class VPNConfigGUI:
     
     
     def on_mirror_selected(self):
-        """Handle mirror and thread count selection"""
+        """Handle mirror, thread count, and test URL selection"""
         selected_mirror = self.mirror_combo.get()
         selected_threads = self.thread_combo.get()
+        selected_test_url = self.test_url_combo.get()
         
         if selected_mirror in self.MIRRORS:
             self.CONFIGS_URL = self.MIRRORS[selected_mirror]
@@ -633,7 +724,19 @@ class VPNConfigGUI:
             except ValueError:
                 self.LATENCY_WORKERS = 100  # Default if conversion fails
                 
-            self.log(f"Selected mirror: {selected_mirror}, Threads: {self.LATENCY_WORKERS}")
+            # Set the test URL for latency measurement
+            self.test_url = selected_test_url
+            
+            # Detailed logging of selected values
+            self.log("\n" + "="*50)
+            self.log("Configuration Selection Summary:")
+            self.log("-"*45)
+            self.log(f"Selected Mirror: {selected_mirror}")
+            #self.log(f"Mirror URL: {self.MIRRORS[selected_mirror]}")
+            self.log(f"Max CPU Threads: {self.LATENCY_WORKERS}")
+            self.log(f"Latency Test URL: {selected_test_url}")
+            self.log("="*50 + "\n")
+            
             self.mirror_window.destroy()
             self._start_fetch_and_test()
         else:
@@ -680,8 +783,166 @@ class VPNConfigGUI:
     
     
     
+    def show_speed_test_selection(self):
+        """Show a popup window to select speed and test URL"""
+        self.speed_test_window = tk.Toplevel(self.root)
+        self.speed_test_window.title("Select Speed & Test URL")
+        self.speed_test_window.geometry("350x250")
+        self.speed_test_window.resizable(False, False)
+        
+        # Center the window
+        window_width = 350
+        window_height = 200
+        screen_width = self.speed_test_window.winfo_screenwidth()
+        screen_height = self.speed_test_window.winfo_screenheight()
+        x = int((screen_width/2) - (window_width/2))
+        y = int((screen_height/2) - (window_height/2))
+        self.speed_test_window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        
+        # Dark theme for the popup
+        self.speed_test_window.tk_setPalette(background='#2d2d2d', foreground='#ffffff',
+                              activeBackground='#3e3e3e', activeForeground='#ffffff')
+        
+        # Create a custom style for the combobox
+        style = ttk.Style()
+        style.theme_use('clam')  # Use 'clam' theme as base
+        
+        # Configure combobox colors
+        style.configure('TCombobox', 
+                       fieldbackground='#3e3e3e',  # Background of the text field
+                       background='#3e3e3e',       # Background of the dropdown
+                       foreground='#ffffff',       # Text color
+                       selectbackground='#4a6984', # Selection background
+                       selectforeground='#ffffff', # Selection text color
+                       bordercolor='#3e3e3e',     # Border color
+                       lightcolor='#3e3e3e',      # Light part of the border
+                       darkcolor='#3e3e3e')       # Dark part of the border
+        
+        # Configure the dropdown list
+        style.map('TCombobox', 
+                  fieldbackground=[('readonly', '#3e3e3e')],
+                  selectbackground=[('readonly', '#4a6984')],
+                  selectforeground=[('readonly', '#ffffff')],
+                  background=[('readonly', '#3e3e3e')])
+        
+        # Speed selection
+        ttk.Label(self.speed_test_window, text="Select testing speed:").pack(pady=(15, 0))
+        
+        # Speed options with descriptions
+        speed_options = [
+            "Fast (5s timeout)",
+            "Normal (10s timeout)", 
+            "Slow (15s timeout)",
+            "Very Slow (20s timeout)"
+        ]
+        
+        self.speed_combo = ttk.Combobox(
+            self.speed_test_window, 
+            values=speed_options,
+            state="readonly",
+            style='TCombobox'
+        )
+        self.speed_combo.current(1)  # Default to "Normal"
+        self.speed_combo.pack(pady=5, padx=20, fill=tk.X)
+        
+        # Test URL selection
+        ttk.Label(self.speed_test_window, text="Select test URL:").pack(pady=(15, 0))
+        
+        # Test URL options
+        test_url_options = [
+            "https://hero-wars.com",
+            "https://web.telegram.org",
+            "https://facebook.com",
+            "https://netflix.com",
+        ]
+        
+        self.test_url_combo = ttk.Combobox(
+            self.speed_test_window,
+            values=test_url_options,
+            state="readonly",
+            style='TCombobox'
+        )
+        self.test_url_combo.current(0)  # Default to "hero-wars.com"
+        self.test_url_combo.pack(pady=5, padx=20, fill=tk.X)
+        
+        # Apply dark background to the dropdown lists
+        self.speed_test_window.option_add('*TCombobox*Listbox.background', '#3e3e3e')
+        self.speed_test_window.option_add('*TCombobox*Listbox.foreground', '#ffffff')
+        self.speed_test_window.option_add('*TCombobox*Listbox.selectBackground', '#4a6984')
+        self.speed_test_window.option_add('*TCombobox*Listbox.selectForeground', '#ffffff')
+        
+        # Frame for buttons
+        button_frame = ttk.Frame(self.speed_test_window)
+        button_frame.pack(pady=20)
+        
+        # OK button
+        ttk.Button(
+            button_frame, 
+            text="OK", 
+            command=self.on_speed_test_selected
+        ).pack(side=tk.LEFT, padx=5)
+        
+        # Cancel button
+        ttk.Button(
+            button_frame, 
+            text="Cancel", 
+            command=self.cancel_speed_test_selection
+        ).pack(side=tk.LEFT, padx=5)
+        
+        # Handle window close (X button)
+        self.speed_test_window.protocol("WM_DELETE_WINDOW", self.cancel_speed_test_selection)
+        
+        # Make the window modal
+        self.speed_test_window.grab_set()
+        self.speed_test_window.transient(self.root)
+        self.speed_test_window.wait_window(self.speed_test_window)
+
+    def on_speed_test_selected(self):
+        """Handle speed and test URL selection"""
+        selected_speed = self.speed_combo.get()
+        selected_test_url = self.test_url_combo.get()
+        
+        # Map speed selection to timeout values
+        speed_mapping = {
+            "Fast (5s timeout)": 5,
+            "Normal (10s timeout)": 10,
+            "Slow (15s timeout)": 15,
+            "Very Slow (20s timeout)": 20
+        }
+        
+        # Set the timeout based on selection
+        self.latency_timeout = speed_mapping.get(selected_speed, 10)  # Default to 10 if not found
+        
+        # Set the test URL
+        self.test_url = selected_test_url
+        
+        self.log(f"Selected speed: {selected_speed} (timeout: {self.latency_timeout}s)")
+        self.log(f"Selected test URL: {selected_test_url}")
+        
+        self.speed_test_window.destroy()
+        
+        # Continue with the original load_best_configs logic
+        self._start_load_best_configs()
+
+    def cancel_speed_test_selection(self):
+        """Handle cancel or window close without selection"""
+        if hasattr(self, 'speed_test_window') and self.speed_test_window:
+            self.speed_test_window.destroy()
+        
+        # Reset the button state
+        self.reload_btn.config(
+            text="Reload Best Configs",
+            style='TButton',
+            state=tk.NORMAL
+        )
+
+    # Modified load_best_configs to show popup first
     def load_best_configs(self):
-        """Load best configs from file if it exists and test them"""
+        """Show popup to select speed and test URL before loading configs"""
+        self.show_speed_test_selection()
+
+    def _start_load_best_configs(self):
+        """Start the actual config loading process after selection"""
         try:
             # Change button to stop state
             self.root.after(0, lambda: self.reload_btn.config(
@@ -746,7 +1007,7 @@ class VPNConfigGUI:
                         self.active_threads.append(thread)
                     thread.start()
 
-        except Exception as e:  # Added proper except block
+        except Exception as e:
             self.log(f"Error loading best configs: {str(e)}")
             # Reset button if error occurs
             self.root.after(0, lambda: self.reload_btn.config(
@@ -766,16 +1027,21 @@ class VPNConfigGUI:
             self.stop_reloading()
             return
             
-        self.reload_btn.config(
-            text="Stop Loading Configs",
-            style='Stop.TButton',
-            state=tk.NORMAL
-        )
-        self.log("Reloading and testing configs from best_configs.txt...")
+        
         
         # Don't clear best_configs or treeview here - let load_best_configs handle it
         # Load and test configs from file
-        self.load_best_configs()
+        if os.path.exists(self.BEST_CONFIGS_FILE):
+            self.load_best_configs()
+            
+            self.reload_btn.config(
+                text="Stop Loading Configs",
+                style='Stop.TButton',
+                state=tk.NORMAL
+            )
+            self.log("Reloading and testing configs from best_configs.txt...")
+        else :
+            self.log("No best_configs.txt found...")
     
     
     
@@ -1641,7 +1907,7 @@ class VPNConfigGUI:
     def disconnect_config(self, click_button=False):
         """Disconnect from current config"""
         if not self.is_connected:
-            messagebox.showinfo("Info", "Not connected")
+            #messagebox.showinfo("Info", "Not connected")
             return
         
         
@@ -2102,6 +2368,10 @@ class VPNConfigGUI:
                 return port
         return 1080
 
+    
+    
+    
+    # Updated measure_latency function to use the selected test URL and timeout
     def measure_latency(self, config_uri):
         if self.stop_event.is_set():
             return (config_uri, float('inf'))
@@ -2115,17 +2385,9 @@ class VPNConfigGUI:
             config = self.parse_protocol(config_uri)
             config['inbounds'][0]['port'] = socks_port
             
-            
-            # Add DNS settings to the config
-            #config['dns'] = {
-            #    "servers": [
-            #        "8.8.8.8",  # Google DNS
-            #        "1.1.1.1",  # Cloudflare DNS
-            #        "185.51.200.2",
-            #        "178.22.122.100",
-            #        "localhost"
-            #    ]
-            #}
+            # Use the selected test URL, fallback to default if not set
+            test_url = getattr(self, 'test_url', 'https://hero-wars.com')
+            timeout = getattr(self, 'latency_timeout', 10)
             
             rand_suffix = random.randint(100000, 999999)
             temp_config_file = os.path.join(self.TEMP_FOLDER, f"temp_config_{rand_suffix}.json")
@@ -2163,35 +2425,41 @@ class VPNConfigGUI:
                 'https': f'socks5://127.0.0.1:{socks_port}'
             }
             
-            latency = float('inf')
+            # Test the selected URL
             try:
                 start_time = time.perf_counter()
                 response = requests.get(
-                    self.PING_TEST_URL,
+                    test_url,
                     proxies=proxies,
-                    timeout=10,
+                    timeout=timeout,
                     headers={
                         'Cache-Control': 'no-cache',
-                        'Connection': 'close'
+                        'Connection': 'close',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                     }
                 )
+                
                 if response.status_code == 200:
                     latency = (time.perf_counter() - start_time) * 1000
+                else:
+                    latency = float('inf')
+                    
             except requests.RequestException:
+                latency = float('inf')
+            
+            # Clean up
+            xray_process.terminate()
+            try:
+                xray_process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                xray_process.kill()
+            
+            try:
+                os.remove(temp_config_file)
+            except:
                 pass
-            finally:
-                xray_process.terminate()
-                try:
-                    xray_process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    xray_process.kill()
-                
-                try:
-                    os.remove(temp_config_file)
-                except:
-                    pass
-                
-                time.sleep(0.1)
+            
+            time.sleep(0.1)
             
             return (config_uri, latency)
         
@@ -2199,6 +2467,202 @@ class VPNConfigGUI:
             return (config_uri, float('inf'))
 
     
+    
+    
+    
+    def update_freenet(self):
+        """Update freenet executable with latest GitHub release"""
+        self.log("Starting freenet update...")
+        self.log_system_info()  # Log system info before updating
+        thread = threading.Thread(target=self._update_freenet_worker, daemon=True)
+        thread.start()
+
+    def _update_freenet_worker(self):
+        """Worker thread for updating freenet"""
+        try:
+            # Check latest version on GitHub
+            latest_version = self._get_latest_freenet_version()
+            if not latest_version:
+                self.log("Failed to get latest freenet version from GitHub")
+                messagebox.showerror("Error", "Failed to get latest freenet version from GitHub")
+                return
+            
+            self.log(f"Latest freenet version: {latest_version}")
+            self.log(f"Current freenet version: {self.current_version}")
+            
+            # Compare versions
+            if self._compare_versions(self.current_version, latest_version) >= 0:
+                self.log("Freenet is already up to date")
+                messagebox.showinfo("Info", f"Freenet is already up to date (current: {self.current_version}, latest: {latest_version})")
+                return
+            
+            # Kill any running freenet processes
+            # self.kill_existing_freenet_processes()
+            
+            # Download the latest version
+            zip_url = f"https://github.com/sajjadabd/freenet/releases/download/v{latest_version}/freenet-windows.zip"
+            zip_path = os.path.join(self.TEMP_FOLDER, "freenet_update.zip")
+            
+            # Create temp folder if it doesn't exist
+            os.makedirs(self.TEMP_FOLDER, exist_ok=True)
+            
+            self.log(f"Downloading freenet v{latest_version}...")
+            self.log(f"Using URL: {zip_url}")
+            
+            # Use multi-threaded download
+            success, message = self._download_file_segmented(
+                zip_url, 
+                zip_path, 
+                f"freenet v{latest_version}", 
+                num_segments=4
+            )
+            
+            if not success:
+                self.log(f"Download failed: {message}")
+                messagebox.showerror("Error", f"Failed to download freenet: {message}")
+                return
+            
+            self.log("Extracting freenet...")
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                # Get total number of files for progress tracking
+                file_list = zip_ref.namelist()
+                total_files = len(file_list)
+                extracted_files = 0
+                
+                # Determine the correct executable name based on OS
+                executable_name = "freenet.exe" if platform.system() == "Windows" else "freenet"
+                new_executable_name = f"freenet-v{latest_version}.exe" if platform.system() == "Windows" else f"freenet-v{latest_version}"
+                
+                for file in file_list:
+                    zip_ref.extract(file, self.TEMP_FOLDER)
+                    extracted_files += 1
+                    progress = (extracted_files / total_files) * 100
+                    self.log(f"Extraction progress: {progress:.1f}% ({extracted_files}/{total_files} files)")
+                    
+                    # Check if this is the freenet executable file
+                    if file.lower().endswith(executable_name.lower()) or file.lower() == executable_name.lower():
+                        # Move it to the main directory with versioned name
+                        extracted_path = os.path.join(self.TEMP_FOLDER, file)
+                        versioned_path = os.path.join(os.path.dirname(self.FREENET_PATH), new_executable_name)
+                        shutil.move(extracted_path, versioned_path)
+                        
+                        # Make executable on Unix-like systems
+                        if platform.system() != "Windows":
+                            os.chmod(versioned_path, 0o755)
+                        
+                        # Update the freenet path to point to the new version
+                        self.FREENET_PATH = versioned_path
+                        self.log(f"Freenet executable renamed to: {new_executable_name}")
+            
+            # Update current version
+            self.current_version = latest_version
+            
+            self.log(f"Freenet updated successfully to version {latest_version}!")
+            messagebox.showinfo("Success", f"Freenet updated successfully to version {latest_version}!")
+            
+        except Exception as e:
+            self.log(f"Error updating freenet: {str(e)}")
+            messagebox.showerror("Error", f"Failed to update freenet: {str(e)}")
+        finally:
+            # Clean up
+            try:
+                if 'zip_path' in locals():
+                    os.remove(zip_path)
+            except:
+                pass
+
+    def _get_latest_freenet_version(self):
+        """Get the latest freenet version from GitHub releases"""
+        try:
+            self.log("Checking latest freenet version on GitHub...")
+            
+            # Follow the redirect to get the actual latest release URL
+            response = requests.get("https://github.com/sajjadabd/freenet/releases/latest", allow_redirects=True)
+            response.raise_for_status()
+            
+            # Extract version from the final URL
+            # URL format: https://github.com/sajjadabd/freenet/releases/tag/v1.7
+            final_url = response.url
+            self.log(f"Latest release URL: {final_url}")
+            
+            # Extract version number from URL
+            import re
+            version_match = re.search(r'/releases/tag/v(\d+\.\d+(?:\.\d+)?)', final_url)
+            if version_match:
+                version = version_match.group(1)
+                self.log(f"Extracted version: {version}")
+                return version
+            else:
+                self.log("Could not extract version from URL")
+                return None
+                
+        except Exception as e:
+            self.log(f"Error getting latest freenet version: {str(e)}")
+            return None
+
+    def _compare_versions(self, version1, version2):
+        """Compare two version strings (e.g., "1.7", "1.8.1")
+        Returns: -1 if version1 < version2, 0 if equal, 1 if version1 > version2"""
+        try:
+            # Split versions into parts and convert to integers
+            v1_parts = [int(x) for x in str(version1).split('.')]
+            v2_parts = [int(x) for x in str(version2).split('.')]
+            
+            # Pad the shorter version with zeros
+            max_len = max(len(v1_parts), len(v2_parts))
+            v1_parts.extend([0] * (max_len - len(v1_parts)))
+            v2_parts.extend([0] * (max_len - len(v2_parts)))
+            
+            # Compare parts
+            for i in range(max_len):
+                if v1_parts[i] < v2_parts[i]:
+                    return -1
+                elif v1_parts[i] > v2_parts[i]:
+                    return 1
+            
+            return 0  # versions are equal
+            
+        except Exception as e:
+            self.log(f"Error comparing versions: {str(e)}")
+            return -1  # assume current version is older if comparison fails
+
+    def kill_existing_freenet_processes(self):
+        """Kill any existing freenet processes"""
+        try:
+            self.log("Checking for existing freenet processes...")
+            
+            if platform.system() == "Windows":
+                # Windows: use taskkill
+                try:
+                    result = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq freenet*'], 
+                                          capture_output=True, text=True)
+                    if 'freenet' in result.stdout.lower():
+                        self.log("Found running freenet processes, terminating...")
+                        subprocess.run(['taskkill', '/F', '/IM', 'freenet*'], 
+                                     capture_output=True)
+                        time.sleep(2)  # Give processes time to terminate
+                        self.log("Freenet processes terminated")
+                except Exception as e:
+                    self.log(f"Error killing freenet processes on Windows: {str(e)}")
+            else:
+                # Unix-like systems: use pkill
+                try:
+                    result = subprocess.run(['pgrep', '-f', 'freenet'], 
+                                          capture_output=True, text=True)
+                    if result.stdout.strip():
+                        self.log("Found running freenet processes, terminating...")
+                        subprocess.run(['pkill', '-f', 'freenet'], 
+                                     capture_output=True)
+                        time.sleep(2)  # Give processes time to terminate
+                        self.log("Freenet processes terminated")
+                except Exception as e:
+                    self.log(f"Error killing freenet processes on Unix: {str(e)}")
+                    
+        except Exception as e:
+            self.log(f"Error in kill_existing_freenet_processes: {str(e)}")
+            
+            
+        
     
     
     def update_xray_core(self):
@@ -2217,28 +2681,24 @@ class VPNConfigGUI:
             self.log("Downloading latest Xray core...")
             self.log(f"Using URL: {self.XRAY_CORE_URL}")
             
-            response = requests.get(self.XRAY_CORE_URL, stream=True)
-            response.raise_for_status()
-            
-            # Get the total file size from headers
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded = 0
-            
             # Save the downloaded zip file
             zip_path = os.path.join(self.TEMP_FOLDER, "xray_update.zip")
             
             # Create temp folder if it doesn't exist
             os.makedirs(self.TEMP_FOLDER, exist_ok=True)
             
-            with open(zip_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:  # filter out keep-alive new chunks
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        # Calculate progress percentage
-                        progress = (downloaded / total_size) * 100 if total_size > 0 else 0
-                        # Update log with progress
-                        self.log(f"Download progress: {progress:.1f}% ({downloaded}/{total_size} bytes)")
+            # Use multi-threaded download
+            success, message = self._download_file_segmented(
+                self.XRAY_CORE_URL, 
+                zip_path, 
+                "Xray core", 
+                num_segments=4
+            )
+            
+            if not success:
+                self.log(f"Download failed: {message}")
+                messagebox.showerror("Error", f"Failed to download Xray core: {message}")
+                return
             
             self.log("Extracting Xray core...")
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -2278,16 +2738,6 @@ class VPNConfigGUI:
                 os.remove(zip_path)
             except:
                 pass
-    
-    
-    
-    
-    
-    def update_geofiles(self):
-        """Update GeoFiles (geoip.dat and geosite.dat) using multi-threading for each file"""
-        self.log("Starting GeoFiles update with multi-threading...")
-        thread = threading.Thread(target=self._update_geofiles_worker, daemon=True)
-        thread.start()
 
     def _download_file_segmented(self, url, filename, file_description, num_segments=4):
         """Download a file using multiple segments for faster download"""
@@ -2418,10 +2868,9 @@ class VPNConfigGUI:
             
         except Exception as e:
             return False, f"Error downloading {file_description}: {str(e)}"
-
     
     
-    
+ 
     def _download_file(self, url, filename, file_description):
         """Download a single file with progress tracking"""
         try:
@@ -2446,6 +2895,16 @@ class VPNConfigGUI:
             
         except Exception as e:
             return False, f"Error downloading {file_description}: {str(e)}"
+
+ 
+    
+    
+    def update_geofiles(self):
+        """Update GeoFiles (geoip.dat and geosite.dat) using multi-threading for each file"""
+        self.log("Starting GeoFiles update with multi-threading...")
+        thread = threading.Thread(target=self._update_geofiles_worker, daemon=True)
+        thread.start()
+
     
     
     
@@ -2495,6 +2954,8 @@ class VPNConfigGUI:
             self.log("   - dlc.dat")
             self.log("4. Restart the program if needed")
 
+    
+    
     def update_all_concurrently(self):
         """Update both Xray core and GeoFiles concurrently"""
         self.log("Starting concurrent update of Xray core and GeoFiles...")
@@ -2514,86 +2975,7 @@ class VPNConfigGUI:
         self.log("All updates started concurrently!")
 
     
-    
-    
-    
-    # Enhanced version with download segmentation for even faster downloads
-    def _download_file_segmented(self, url, filename, file_description, num_segments=4):
-        """Download a file using multiple segments for faster download"""
-        try:
-            self.log(f"Starting segmented download of {file_description}...")
-            
-            # Get file size first
-            head_response = requests.head(url)
-            head_response.raise_for_status()
-            total_size = int(head_response.headers.get('content-length', 0))
-            
-            if total_size == 0:
-                # Fall back to normal download if size is unknown
-                return self._download_file(url, filename, file_description)
-            
-            # Calculate segment size
-            segment_size = total_size // num_segments
-            segments = []
-            
-            # Create segments
-            for i in range(num_segments):
-                start = i * segment_size
-                end = start + segment_size - 1 if i < num_segments - 1 else total_size - 1
-                segments.append((start, end))
-            
-            # Download segments concurrently
-            segment_files = []
-            with ThreadPoolExecutor(max_workers=num_segments) as executor:
-                future_to_segment = {
-                    executor.submit(self._download_segment, url, start, end, f"{filename}.part{i}"): i
-                    for i, (start, end) in enumerate(segments)
-                }
-                
-                for future in as_completed(future_to_segment):
-                    segment_index = future_to_segment[future]
-                    try:
-                        success, part_filename = future.result()
-                        if success:
-                            segment_files.append((segment_index, part_filename))
-                            self.log(f"{file_description}: Segment {segment_index + 1}/{num_segments} complete")
-                        else:
-                            raise Exception(f"Failed to download segment {segment_index}")
-                    except Exception as e:
-                        self.log(f"Error downloading segment {segment_index}: {str(e)}")
-                        return False, f"Error downloading {file_description}: {str(e)}"
-            
-            # Combine segments
-            segment_files.sort(key=lambda x: x[0])  # Sort by segment index
-            with open(filename, 'wb') as outfile:
-                for _, part_filename in segment_files:
-                    with open(part_filename, 'rb') as infile:
-                        outfile.write(infile.read())
-                    os.remove(part_filename)  # Clean up part file
-            
-            self.log(f"{file_description} segmented download complete!")
-            return True, f"{file_description} downloaded successfully"
-            
-        except Exception as e:
-            return False, f"Error downloading {file_description}: {str(e)}"
 
-    def _download_segment(self, url, start, end, filename):
-        """Download a specific segment of a file"""
-        try:
-            headers = {'Range': f'bytes={start}-{end}'}
-            response = requests.get(url, headers=headers, stream=True)
-            response.raise_for_status()
-            
-            with open(filename, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            
-            return True, filename
-        except Exception as e:
-            return False, str(e)
-    
-    
     
     def fetch_configs(self):
         max_retries = 3
@@ -2723,6 +3105,10 @@ class VPNConfigGUI:
         raise Exception("All direct IP attempts failed")
 
 def main():
+    if is_program_running():
+        print("Another instance is already running. Exiting.")
+        sys.exit(1)
+    
     # Kill any existing Xray processes
     kill_xray_processes()
     

@@ -744,6 +744,9 @@ class VPNConfigGUI:
             self.log(f"Latency Test URL: {selected_test_url}")
             self.log("="*50 + "\n")
             
+            
+            self.reload_btn.config(state=tk.DISABLED)
+            
             self.mirror_window.destroy()
             self._start_fetch_and_test()
         else:
@@ -928,6 +931,15 @@ class VPNConfigGUI:
         
         self.speed_test_window.destroy()
         
+        
+        self.reload_btn.config(
+            text="Stop Loading Configs",
+            style='Stop.TButton',
+            state=tk.NORMAL
+        )
+        self.fetch_btn.config(state=tk.DISABLED)
+        self.log("Reloading and testing configs from best_configs.txt...")
+        
         # Continue with the original load_best_configs logic
         self._start_load_best_configs()
 
@@ -1040,13 +1052,6 @@ class VPNConfigGUI:
         # Load and test configs from file
         if os.path.exists(self.BEST_CONFIGS_FILE):
             self.load_best_configs()
-            
-            self.reload_btn.config(
-                text="Stop Loading Configs",
-                style='Stop.TButton',
-                state=tk.NORMAL
-            )
-            self.log("Reloading and testing configs from best_configs.txt...")
         else :
             self.log("No best_configs.txt found...")
     
@@ -1091,14 +1096,54 @@ class VPNConfigGUI:
             self.log(f"Error deleting configs: {str(e)}")
 
 
-    def save_best_configs(self):
-        """Save current best configs to file"""
+    
+    
+    
+    def safe_append_config(self, config_uri):
+        """
+        Safely append a config to the file, checking for duplicates first.
+        Creates the file if it doesn't exist, then appends if config is unique.
+        
+        Args:
+            config_uri (str): The config URI to append
+        
+        Returns:
+            bool: True if config was appended, False if it already existed
+        """
         try:
-            with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
-                for config_uri, _ in self.best_configs:  # Only save the URI part
-                    f.write(f"{config_uri}\n")
+            # Create file if it doesn't exist
+            if not os.path.exists(self.BEST_CONFIGS_FILE):
+                with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
+                    pass  # Create empty file
+                #self.log(f"Created new config file: {self.BEST_CONFIGS_FILE}")
+            
+            # Read existing configs to check for duplicates
+            existing_configs = set()
+            with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        existing_configs.add(line)
+            
+            # Check if config already exists
+            if config_uri in existing_configs:
+                return False  # Config already exists, don't append
+            
+            # Append the new config
+            with open(self.BEST_CONFIGS_FILE, 'a', encoding='utf-8') as f:
+                f.write(f"{config_uri}\n")
+            
+            return True  # Successfully appended
         except Exception as e:
-            self.log(f"Error saving best configs: {str(e)}")
+            self.log(f"Error appending config: {str(e)}")
+            return False
+    
+    
+    
+    
+    def save_best_configs(self):
+        """Save current best configs to file - DEPRECATED, use safe_append_config instead"""
+        self.log("Configs are saved automatically in best_configs.txt")
     
     
     
@@ -1247,6 +1292,11 @@ class VPNConfigGUI:
             configs: List of configs to test
         """
         try:
+            # Create file if it doesn't exist
+            if not os.path.exists(self.BEST_CONFIGS_FILE):
+                with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
+                    pass  # Create empty file
+            
             self.total_configs = len(configs)
             self.tested_configs = 0
             self.working_configs = 0
@@ -1255,27 +1305,6 @@ class VPNConfigGUI:
             self.root.after(0, lambda: self.progress.config(maximum=len(configs), value=0))
             
             best_configs = []
-            all_tested_configs = []  # Store all tested configs
-            
-            # Load existing configs from file to preserve them
-            existing_configs = set()
-            if os.path.exists(self.BEST_CONFIGS_FILE):
-                try:
-                    with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
-                        for line in f:
-                            line = line.strip()
-                            if line:
-                                existing_configs.add(line)
-                except Exception as e:
-                    self.log(f"Error reading existing configs: {str(e)}")
-            
-            # Keep track of configs we've successfully saved to file
-            # Start with existing configs from file
-            saved_configs = existing_configs.copy()
-            
-            # Also add backup configs if available
-            if hasattr(self, 'original_configs_backup') and self.original_configs_backup:
-                saved_configs.update(self.original_configs_backup)
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.LATENCY_WORKERS) as executor:
                 futures = {executor.submit(self.measure_latency, config): config for config in configs}
@@ -1288,10 +1317,6 @@ class VPNConfigGUI:
                         
                     result = future.result()
                     self.tested_configs += 1
-                    all_tested_configs.append(result)  # Store all results
-                    
-                    # Add this config to our saved set (whether working or not)
-                    saved_configs.add(result[0])
                     
                     if result[1] != float('inf'):
                         # Check if this config is already in best_configs (from current testing session)
@@ -1308,25 +1333,24 @@ class VPNConfigGUI:
                             self.working_configs += 1
                             self.log(f"Working config found: {result[1]:.2f}ms")
                             
+                            # Safely append the working config immediately
+                            if self.safe_append_config(result[0]):
+                                pass
+                                #self.log(f"Config saved: {result[0]}")
+                            else:
+                                pass
+                                #self.log(f"Config already exists: {result[0]}")
+                            
                             # Update the treeview with this new working config
                             self.best_configs = sorted(best_configs, key=lambda x: x[1])
                             self.root.after(0, self.update_treeview)
-                    
-                    # Incrementally save configs to file to prevent loss on stop
-                    # This ensures that even if stopped, we don't lose progress
-                    try:
-                        with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
-                            for config_uri in sorted(saved_configs):
-                                f.write(f"{config_uri}\n")
-                    except Exception as save_error:
-                        self.log(f"Error saving progress: {str(save_error)}")
                     
                     # Update progress and counters
                     self.root.after(0, lambda: self.progress.config(value=self.tested_configs))
                     self.root.after(0, self.update_counters)
             
             # Final processing - only if not stopped
-            if not self.stop_event.is_set() and len(all_tested_configs) > 0:
+            if not self.stop_event.is_set() and len(best_configs) > 0:
                 # Load existing working configs from self.best_configs (from previous sessions)
                 # and merge with newly found working configs
                 existing_working_configs = []
@@ -1355,35 +1379,14 @@ class VPNConfigGUI:
                 # Sort by latency
                 self.best_configs.sort(key=lambda x: x[1])
                 
-                # Final save - all configs have already been saved incrementally
+                # Final update (no file writing here - already done incrementally)
                 self.root.after(0, self.update_treeview)
                 self.log(f"Testing complete! Found {len([c for c in best_configs if c[1] != float('inf')])} new working configs")
                 self.log(f"Total working configs: {len(self.best_configs)}")
                 
         except Exception as e:
             self.log(f"Error in testing pasted configs: {str(e)}")
-            # On error, try to preserve what we have
-            try:
-                # Read current file state
-                current_configs = set()
-                if os.path.exists(self.BEST_CONFIGS_FILE):
-                    with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
-                        for line in f:
-                            line = line.strip()
-                            if line:
-                                current_configs.add(line)
-                
-                # Add original configs if available
-                if hasattr(self, 'original_configs_backup') and self.original_configs_backup:
-                    current_configs.update(self.original_configs_backup)
-                
-                # Save combined configs
-                with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
-                    for config_uri in sorted(current_configs):
-                        f.write(f"{config_uri}\n")
-                self.log("Error occurred - configs preserved")
-            except Exception as restore_error:
-                self.log(f"Failed to preserve configs: {str(restore_error)}")
+            # No need to preserve configs here - they're already saved incrementally
                 
         finally:
             # Clean up
@@ -1423,36 +1426,7 @@ class VPNConfigGUI:
         with self.thread_lock:
             self.active_threads.clear()
         
-        # Preserve all configs that are currently in the file
-        # Read current state of the file (which may have been updated during testing)
-        current_configs = set()
-        if os.path.exists(self.BEST_CONFIGS_FILE):
-            try:
-                with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            current_configs.add(line)
-            except Exception as e:
-                self.log(f"Error reading current configs: {str(e)}")
-        
-        # Add original configs from backup if they exist
-        if hasattr(self, 'original_configs_backup') and self.original_configs_backup:
-            current_configs.update(self.original_configs_backup)
-        
-        # Add any configs from the current best_configs list
-        for config_uri, _ in self.best_configs:
-            current_configs.add(config_uri)
-        
-        # Write back all configs to preserve them
-        if current_configs:
-            try:
-                with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
-                    for config_uri in sorted(current_configs):  # Sort for consistent format
-                        f.write(f"{config_uri}\n")
-                self.log("Stopped loading - all configs preserved in file")
-            except Exception as e:
-                self.log(f"Error preserving configs: {str(e)}")
+        # NO FILE WRITING HERE - file is already preserved with append operations
         
         # Only reset the progress bar and button state, don't clear configs
         self.root.after(0, lambda: self.progress.config(value=0))
@@ -1462,14 +1436,9 @@ class VPNConfigGUI:
             state=tk.NORMAL
         ))
         
-        # Don't reset these counters:
-        # self.tested_configs = 0
-        # self.working_configs = 0
-        # self.total_configs = 0
-        
         self.root.after(0, self.update_counters)
-        
         self.stop_event.clear()  # Clear the stop event for future operations
+
 
 
 
@@ -1652,11 +1621,10 @@ class VPNConfigGUI:
             with self.thread_lock:
                 self.active_threads.append(threading.current_thread())
             
-            # First load ALL existing configs from file
-            existing_working_configs = []
-            if os.path.exists(self.BEST_CONFIGS_FILE):
-                with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
-                    existing_working_configs = [line.strip() for line in f if line.strip()]
+            # Create file if it doesn't exist
+            if not os.path.exists(self.BEST_CONFIGS_FILE):
+                with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
+                    pass  # Create empty file
             
             # Fetch configs
             self.log("Fetching configs from GitHub...")
@@ -1699,6 +1667,14 @@ class VPNConfigGUI:
                             self.working_configs += 1
                             self.log(f"Working config found: {result[1]:.2f}ms")
                             
+                            # Safely append the working config immediately
+                            if self.safe_append_config(config_uri):
+                                pass
+                                #self.log(f"Config saved: {config_uri}")
+                            else:
+                                #self.log(f"Config already exists: {config_uri}")
+                                pass
+                            
                             # Update treeview with the new config
                             self.best_configs = sorted(new_working_configs, key=lambda x: x[1])
                             self.root.after(0, self.update_treeview)
@@ -1707,18 +1683,10 @@ class VPNConfigGUI:
                     self.root.after(0, lambda: self.progress.config(value=self.tested_configs))
                     self.root.after(0, self.update_counters)
             
-            # Combine old and new working configs (remove duplicates)
-            all_working_uris = set(existing_working_configs)
-            all_working_uris.update([uri for uri, _ in new_working_configs])
-            
-            # Save ALL working configs to file (both old and new)
-            with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(all_working_uris))
-                
-            # Final sort and update
+            # Final sort and update (no file writing here)
             self.best_configs = sorted(new_working_configs, key=lambda x: x[1])
             
-            # Save working configs (for debugging)
+            # Save working configs for debugging (separate file)
             with open(self.WORKING_CONFIGS_FILE, "w", encoding='utf-8') as f:
                 f.write("\n".join([uri for uri, _ in self.best_configs]))
                 
@@ -1743,7 +1711,11 @@ class VPNConfigGUI:
                 self.root.after(0, lambda: self.reload_btn.config(state=tk.NORMAL))
                 self.root.after(0, lambda: self.progress.config(value=0))
                 self.is_fetching = False
+
             
+    
+    
+    
     def update_treeview(self):
         """Update the treeview with best configs"""
         # Clear existing items

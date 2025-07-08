@@ -129,7 +129,7 @@ class VPNConfigGUI:
         self.test_url = "https://www.hero-wars.com"
         
         
-        self.current_version = "1.8"
+        self.current_version = "1.9"
 
         # Define BASE_DIR at the beginning of __init__
         self.BASE_DIR = os.getcwd()

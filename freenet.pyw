@@ -18,12 +18,13 @@ import sys
 from datetime import datetime
 import platform
 if platform.system() == "Windows":
+    import msvcrt  # Windows
     import winreg
 import qrcode
 import zipfile
 import shutil
 import io
-import msvcrt  # Windows
+
 from contextlib import contextmanager
 from PIL import ImageTk, Image
 from concurrent.futures import ThreadPoolExecutor, as_completed

@@ -128,6 +128,10 @@ class VPNConfigGUI:
         self.latency_timeout = 10
         self.test_url = "https://www.hero-wars.com"
         
+        self.update_lock = threading.Lock()
+        self.is_updating = False
+        self.update_type = None  # Track what's being updated
+        
         
         self.current_version = "1.9"
 
@@ -2451,10 +2455,31 @@ class VPNConfigGUI:
     
     def update_freenet(self):
         """Update freenet executable with latest GitHub release"""
-        self.log("Starting freenet update...")
-        self.log_system_info()  # Log system info before updating
-        thread = threading.Thread(target=self._update_freenet_worker, daemon=True)
-        thread.start()
+        # Check if an update is already in progress
+        if self.is_updating:
+            messagebox.showwarning("Update in Progress", 
+                                 f"An update is already in progress ({self.update_type}). Please wait for it to complete.")
+            return
+        
+        # Acquire lock
+        if not self.update_lock.acquire(blocking=False):
+            messagebox.showwarning("Update in Progress", 
+                                 "Another update process is running. Please wait for it to complete.")
+            return
+        
+        try:
+            self.is_updating = True
+            self.update_type = "Freenet"
+            self.log("Starting freenet update...")
+            self.log_system_info()
+            thread = threading.Thread(target=self._update_freenet_worker, daemon=True)
+            thread.start()
+        except Exception as e:
+            # Release lock if thread creation fails
+            self.is_updating = False
+            self.update_type = None
+            self.update_lock.release()
+            raise e
 
     def _update_freenet_worker(self):
         """Worker thread for updating freenet"""
@@ -2475,9 +2500,6 @@ class VPNConfigGUI:
                 messagebox.showinfo("Info", f"Freenet is already up to date (current: {self.current_version}, latest: {latest_version})")
                 return
             
-            # Kill any running freenet processes
-            # self.kill_existing_freenet_processes()
-            
             # Download the latest version
             zip_url = f"https://github.com/sajjadabd/freenet/releases/download/v{latest_version}/freenet-windows.zip"
             zip_path = os.path.join(self.TEMP_FOLDER, "freenet_update.zip")
@@ -2493,7 +2515,7 @@ class VPNConfigGUI:
                 zip_url, 
                 zip_path, 
                 f"freenet v{latest_version}", 
-                num_segments=4
+                num_segments=20
             )
             
             if not success:
@@ -2529,8 +2551,6 @@ class VPNConfigGUI:
                         if platform.system() != "Windows":
                             os.chmod(versioned_path, 0o755)
                         
-                        # Update the freenet path to point to the new version
-                        #self.FREENET_PATH = versioned_path
                         self.log(f"Freenet executable renamed to: {new_executable_name}")
             
             # Update current version
@@ -2549,6 +2569,13 @@ class VPNConfigGUI:
                     os.remove(zip_path)
             except:
                 pass
+            
+            # Always release the lock and reset flags
+            self.is_updating = False
+            self.update_type = None
+            self.update_lock.release()
+
+    
 
     def _get_latest_freenet_version(self):
         """Get the latest freenet version from GitHub releases"""
@@ -2646,10 +2673,31 @@ class VPNConfigGUI:
     
     def update_xray_core(self):
         """Update Xray core executable"""
-        self.log("Starting Xray core update...")
-        self.log_system_info()  # Log system info before updating
-        thread = threading.Thread(target=self._update_xray_core_worker, daemon=True)
-        thread.start()
+        # Check if an update is already in progress
+        if self.is_updating:
+            messagebox.showwarning("Update in Progress", 
+                                 f"An update is already in progress ({self.update_type}). Please wait for it to complete.")
+            return
+        
+        # Acquire lock
+        if not self.update_lock.acquire(blocking=False):
+            messagebox.showwarning("Update in Progress", 
+                                 "Another update process is running. Please wait for it to complete.")
+            return
+        
+        try:
+            self.is_updating = True
+            self.update_type = "Xray Core"
+            self.log("Starting Xray core update...")
+            self.log_system_info()
+            thread = threading.Thread(target=self._update_xray_core_worker, daemon=True)
+            thread.start()
+        except Exception as e:
+            # Release lock if thread creation fails
+            self.is_updating = False
+            self.update_type = None
+            self.update_lock.release()
+            raise e
 
     def _update_xray_core_worker(self):
         """Worker thread for updating Xray core"""
@@ -2714,9 +2762,25 @@ class VPNConfigGUI:
         finally:
             # Clean up
             try:
-                os.remove(zip_path)
+                if 'zip_path' in locals():
+                    os.remove(zip_path)
             except:
                 pass
+            
+            # Always release the lock and reset flags
+            self.is_updating = False
+            self.update_type = None
+            self.update_lock.release()
+
+    # Optional: Add a method to check if updates are running
+    def is_update_in_progress(self):
+        """Check if any update is currently in progress"""
+        return self.is_updating
+    
+    # Optional: Add a method to get current update type
+    def get_current_update_type(self):
+        """Get the type of update currently in progress"""
+        return self.update_type if self.is_updating else None
 
     def _download_file_segmented(self, url, filename, file_description, num_segments=4):
         """Download a file using multiple segments for faster download"""

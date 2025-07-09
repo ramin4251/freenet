@@ -128,7 +128,7 @@ class VPNConfigGUI:
         self.root.geometry("600x600+620+20")
         
         
-        atexit.register(self.kill_existing_freenet_processes)
+        atexit.register(self.kill_existing_xray_processes)
         
         
         self.latency_timeout = 10
@@ -139,7 +139,7 @@ class VPNConfigGUI:
         self.update_type = None  # Track what's being updated
         
         
-        self.current_version = "1.9"
+        self.current_version = "2"
 
         # Define BASE_DIR at the beginning of __init__
         self.BASE_DIR = os.getcwd()
@@ -538,6 +538,7 @@ class VPNConfigGUI:
     def load_settings(self):
         """Load settings from INI file"""
         self.config_parser = configparser.ConfigParser()
+        self.config_parser.optionxform = str
         self.config_parser.read(self.SETTINGS_FILE)
         
         # Initialize MIRRORS dictionary

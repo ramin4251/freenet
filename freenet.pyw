@@ -3909,9 +3909,9 @@ class VPNConfigGUI:
     
 
 def main():
-    if is_program_running():
-        print("Another instance is already running. Exiting.")
-        sys.exit(1)
+    #if is_program_running():
+    #    print("Another instance is already running. Exiting.")
+    #    sys.exit(1)
     
     # Kill any existing Xray processes
     kill_xray_processes()

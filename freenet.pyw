@@ -1,4 +1,6 @@
 import tkinter as tk
+import configparser
+from tkinter import simpledialog
 from tkinter import ttk, messagebox, scrolledtext
 import json
 import base64
@@ -126,6 +128,9 @@ class VPNConfigGUI:
         self.root.geometry("600x600+620+20")
         
         
+        atexit.register(self.kill_existing_freenet_processes)
+        
+        
         self.latency_timeout = 10
         self.test_url = "https://www.hero-wars.com"
         
@@ -158,15 +163,46 @@ class VPNConfigGUI:
         
         
         
-        
+        self.MIRRORS = {}
         
         # Configuration - now using a dictionary of mirrors
-        self.MIRRORS = {
-            "barry-far": "https://raw.githubusercontent.com/barry-far/V2ray-Config/refs/heads/main/All_Configs_Sub.txt",
-            "SoliSpirit": "https://raw.githubusercontent.com/SoliSpirit/v2ray-configs/refs/heads/main/all_configs.txt",
-            #"mrvcoder": "https://raw.githubusercontent.com/mrvcoder/V2rayCollector/refs/heads/main/mixed_iran.txt",
-            #"MatinGhanbari": "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/all_sub.txt",
-        }
+        #self.MIRRORS = {
+        #    "yebeke": [
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/lite/subscriptions/xray/normal/reality",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/lite/subscriptions/xray/normal/reality_domain",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/lite/subscriptions/xray/normal/reality_ipv4",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/lite/subscriptions/xray/normal/ss",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/lite/subscriptions/xray/normal/ss_domain",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/lite/subscriptions/xray/normal/ss_ipv4",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/lite/subscriptions/xray/normal/vless",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/lite/subscriptions/xray/normal/vless_ipv4",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/lite/subscriptions/xray/normal/vmess",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/lite/subscriptions/xray/normal/vmess_domain",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/subscriptions/xray/normal/reality",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/subscriptions/xray/normal/reality_domain",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/subscriptions/xray/normal/reality_ipv4",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/subscriptions/xray/normal/ss",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/subscriptions/xray/normal/ss_domain",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/subscriptions/xray/normal/ss_ipv4",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/subscriptions/xray/normal/vless",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/subscriptions/xray/normal/vless_domain",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/subscriptions/xray/normal/vmess",
+        #        "https://raw.githubusercontent.com/itsyebekhe/PSG/main/subscriptions/xray/normal/vmess_domain",
+        #    ],
+        #    "barry-far": "https://raw.githubusercontent.com/barry-far/V2ray-Config/refs/heads/main/All_Configs_Sub.txt",
+        #    "SoliSpirit": "https://raw.githubusercontent.com/SoliSpirit/v2ray-configs/refs/heads/main/all_configs.txt",
+        #    #"mrvcoder": "https://raw.githubusercontent.com/mrvcoder/V2rayCollector/refs/heads/main/mixed_iran.txt",
+        #    #"MatinGhanbari": "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/all_sub.txt",
+        #}
+        
+        
+        
+        self.SETTINGS_FILE = "settings.ini"
+        self.load_settings()  # Load settings at startup
+        
+        
+        
+        
         self.CONFIGS_URL = self.MIRRORS["barry-far"]  # Default mirror
         self.WORKING_CONFIGS_FILE = "working_configs.txt"
         self.BEST_CONFIGS_FILE = "best_configs.txt"
@@ -216,6 +252,9 @@ class VPNConfigGUI:
         # Load best configs if file exists
         if os.path.exists(self.BEST_CONFIGS_FILE):
             self.load_best_configs()
+        
+        #self.check_internet_connection()
+        
         
     def setup_dark_theme(self):
         """Configure dark theme colors"""
@@ -380,6 +419,9 @@ class VPNConfigGUI:
         # --- Bottom Terminal Frame ---
         bottom_frame = ttk.LabelFrame(main_pane, text="Logs")
         bottom_frame.pack_propagate(False)
+        
+        
+        
 
         counter_frame = ttk.Frame(bottom_frame)
         counter_frame.pack(fill=tk.X, padx=5, pady=(5, 0))
@@ -395,7 +437,11 @@ class VPNConfigGUI:
         
         self.progress = ttk.Progressbar(counter_frame, mode='determinate')
         self.progress.pack(side=tk.RIGHT, padx=(10, 10), fill=tk.X, expand=True)
+        
+        
 
+        
+        
         self.terminal = scrolledtext.ScrolledText(bottom_frame, height=2, state=tk.DISABLED)
         self.terminal.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.terminal.configure(bg='#3e3e3e', fg='#ffffff', insertbackground='white')
@@ -424,7 +470,8 @@ class VPNConfigGUI:
         # Options menu
         options_menu = tk.Menu(menubar, tearoff=0)
         
-        
+        options_menu.add_command(label="Manage Mirrors", command=self.show_mirror_manager)
+        options_menu.add_command(label="--------------", state="disabled")
         options_menu.add_command(label="Update freenet", command=self.update_freenet)
         options_menu.add_command(label="Update Xray Core", command=self.update_xray_core)
         options_menu.add_command(label="Update GeoFiles", command=self.update_geofiles)
@@ -438,6 +485,463 @@ class VPNConfigGUI:
         
         self.root.config(menu=menubar)
         
+        
+        
+        
+    
+    
+    
+    def check_internet_connection(self, event=None):
+        """Check internet connection when label is clicked"""
+        # Show checking status
+        self.internet_status_label.config(text="checking ...", foreground="white")
+        
+        # Run the check in a separate thread to avoid blocking UI
+        check_thread = threading.Thread(target=self._perform_internet_check, daemon=True)
+        check_thread.start()
+
+    def _perform_internet_check(self):
+        """Perform the actual internet connection check"""
+        test_url = "https://farsnews.ir/showcase"
+        
+        try:
+            # Try to connect to the test URL
+            response = requests.get(test_url, timeout=5)
+            if response.status_code == 200:
+                status_text = "internet: on"
+                color = "SpringGreen"
+            else:
+                status_text = "internet: off"
+                color = "Tomato"
+        except (requests.RequestException, ConnectionError):
+            status_text = "internet: off"
+            color = "Tomato"
+        
+        # Update the label in the main thread
+        self.root.after(0, self._update_internet_status_with_reset, status_text, color)
+
+    def _update_internet_status_with_reset(self, text, color):
+        """Update the internet status label and reset after 1 second"""
+        # Update with the result
+        self.internet_status_label.config(text=text, foreground=color)
+        
+        # Reset to normal after 1 second
+        self.root.after(3000, self._reset_internet_status_label)
+
+    def _reset_internet_status_label(self):
+        """Reset the internet status label to normal state"""
+        self.internet_status_label.config(text="check connection", foreground="white")
+    
+    
+    
+    
+    def load_settings(self):
+        """Load settings from INI file"""
+        self.config_parser = configparser.ConfigParser()
+        self.config_parser.read(self.SETTINGS_FILE)
+        
+        # Initialize MIRRORS dictionary
+        self.MIRRORS = {}
+        
+        if 'Mirrors' in self.config_parser:
+            for name, urls in self.config_parser['Mirrors'].items():
+                # Handle single URL or multiple URLs
+                if '\n' in urls:
+                    self.MIRRORS[name] = urls.split('\n')
+                else:
+                    self.MIRRORS[name] = urls
+        
+        # Add default mirrors if none exist
+        if not self.MIRRORS:
+            self.MIRRORS = {
+                "barry-far": "https://raw.githubusercontent.com/barry-far/V2ray-Config/refs/heads/main/All_Configs_Sub.txt",
+                "SoliSpirit": "https://raw.githubusercontent.com/SoliSpirit/v2ray-configs/refs/heads/main/all_configs.txt"
+            }
+            self.save_settings()
+        
+        self.CONFIGS_URL = next(iter(self.MIRRORS.values()))  # Set default to first mirror
+
+    def save_settings(self):
+        """Save settings to INI file"""
+        if not hasattr(self, 'config_parser'):
+            self.config_parser = configparser.ConfigParser()
+        
+        # Convert MIRRORS to config format
+        self.config_parser['Mirrors'] = {}
+        for name, urls in self.MIRRORS.items():
+            if isinstance(urls, list):
+                self.config_parser['Mirrors'][name] = '\n'.join(urls)
+            else:
+                self.config_parser['Mirrors'][name] = urls
+        
+        with open(self.SETTINGS_FILE, 'w') as configfile:
+            self.config_parser.write(configfile)
+
+    def show_mirror_manager(self):
+        """Show the mirror management window"""
+        self.mirror_manager = tk.Toplevel(self.root)
+        self.mirror_manager.title("Mirror Manager")
+        #self.mirror_manager.geometry("600x400")  # Increased height for new control
+        self.mirror_manager.resizable(True, True)
+        
+        # Make window stay on top of root
+        self.mirror_manager.transient(self.root)
+        self.mirror_manager.grab_set()
+        
+        # Center the window
+        window_width = 300
+        window_height = 250
+        screen_width = self.mirror_manager.winfo_screenwidth()
+        screen_height = self.mirror_manager.winfo_screenheight()
+        x = int((screen_width/2) - (window_width/2))
+        y = int((screen_height/2) - (window_height/2))
+        self.mirror_manager.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        
+        # Dark theme for the popup
+        self.mirror_manager.tk_setPalette(background='#2d2d2d', foreground='#ffffff',
+                              activeBackground='#3e3e3e', activeForeground='#ffffff')
+        
+        # Create a custom style for the combobox
+        style = ttk.Style()
+        style.theme_use('clam')  # Use 'clam' theme as base
+        
+        
+        
+        #self.mirror_manager = tk.Toplevel(self.root)
+        #self.mirror_manager.title("Mirror Manager")
+        #self.mirror_manager.geometry("600x400")
+        
+        
+        # Apply dark theme
+        self.mirror_manager.tk_setPalette(background='#2d2d2d', foreground='#ffffff',
+                                        activeBackground='#3e3e3e', activeForeground='#ffffff')
+        
+        # Frame for list and buttons
+        main_frame = ttk.Frame(self.mirror_manager)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Listbox for mirrors
+        list_frame = ttk.Frame(main_frame)
+        list_frame.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        
+        ttk.Label(list_frame, text="Available Mirrors:").pack(pady=(0, 5), anchor='w')
+        
+        self.mirror_listbox = tk.Listbox(
+            list_frame,
+            bg='#3e3e3e',
+            fg='#ffffff',
+            selectbackground='#4a6984',
+            selectforeground='#ffffff',
+            relief=tk.FLAT,
+            highlightthickness=0,  # Remove focus highlight border
+            selectmode=tk.SINGLE,  # Single selection mode
+            activestyle='none'     # This removes the underline on selection
+        )
+        self.mirror_listbox.pack(fill=tk.BOTH, expand=True)
+        
+        # Populate listbox
+        self.update_mirror_listbox()
+        
+        # Button frame
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(fill=tk.Y, side=tk.RIGHT, padx=(10, 0))
+        
+        # Buttons
+        ttk.Button(
+            btn_frame,
+            text="Add Mirror",
+            command=self.add_mirror_dialog,
+            cursor='hand2'
+        ).pack(fill=tk.X, pady=(0, 5))
+        
+        ttk.Button(
+            btn_frame,
+            text="Edit Mirror",
+            command=self.edit_mirror_dialog,
+            cursor='hand2'
+        ).pack(fill=tk.X, pady=(0, 5))
+        
+        ttk.Button(
+            btn_frame,
+            text="Remove Mirror",
+            command=self.remove_mirror,
+            cursor='hand2'
+        ).pack(fill=tk.X, pady=(0, 5))
+        
+        ttk.Button(
+            btn_frame,
+            text="Close",
+            command=self.mirror_manager.destroy,
+            cursor='hand2'
+        ).pack(fill=tk.X, side=tk.BOTTOM)
+        
+        # Bind double click to edit
+        self.mirror_listbox.bind('<Double-1>', lambda e: self.edit_mirror_dialog())
+
+    def update_mirror_listbox(self):
+        """Update the mirror listbox with current mirrors"""
+        self.mirror_listbox.delete(0, tk.END)
+        for name in self.MIRRORS.keys():
+            self.mirror_listbox.insert(tk.END, name)
+
+    def add_mirror_dialog(self):
+        self.add_mirror_manager = tk.Toplevel(self.mirror_manager)
+        self.add_mirror_manager.title("Add Mirror")
+        self.add_mirror_manager.resizable(True, True)
+        
+        # Make dialog stay on top of mirror manager and root
+        self.add_mirror_manager.transient(self.mirror_manager)
+        self.add_mirror_manager.grab_set()
+        
+        # Dark theme for the popup
+        self.add_mirror_manager.tk_setPalette(background='#2d2d2d', foreground='#ffffff',
+                              activeBackground='#3e3e3e', activeForeground='#ffffff')
+        
+        # Create a custom style for the combobox
+        style = ttk.Style()
+        style.theme_use('clam')  # Use 'clam' theme as base
+        
+        # Main container frame
+        main_frame = ttk.Frame(self.add_mirror_manager)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Name entry
+        ttk.Label(main_frame, text="Mirror Name:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        name_entry = ttk.Entry(main_frame, width=50)
+        name_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+        
+        # URLs text area
+        ttk.Label(main_frame, text="URLs (one per line):").grid(row=1, column=0, padx=5, pady=5, sticky=tk.NW)
+        urls_text = scrolledtext.ScrolledText(
+            main_frame,
+            width=40,
+            height=10,
+            bg='#3e3e3e',
+            fg='#ffffff',
+            insertbackground='white'
+        )
+        urls_text.grid(row=1, column=1, padx=5, pady=5, sticky=tk.NSEW)  # Changed to NSEW
+        
+        # Button frame
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.grid(row=2, column=1, pady=(10, 5), sticky=tk.EW)
+        
+        # Buttons
+        ttk.Button(
+            btn_frame,
+            text="Add",
+            command=lambda: self.add_mirror(
+                name_entry.get(),
+                urls_text.get("1.0", tk.END).strip().split('\n')),
+            cursor='hand2'
+        ).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(
+            btn_frame,
+            text="Cancel",
+            command=self.add_mirror_manager.destroy,
+            cursor='hand2'
+        ).pack(side=tk.LEFT, padx=5)
+        
+        # Configure grid weights for expansion
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(1, weight=1)
+        
+        # Focus name field
+        name_entry.focus_set()
+        
+        # Set initial window size after widgets are placed
+        self.add_mirror_manager.update_idletasks()  # Update geometry calculations
+        width = max(600, self.add_mirror_manager.winfo_reqwidth())
+        height = max(400, self.add_mirror_manager.winfo_reqheight())
+        screen_width = self.add_mirror_manager.winfo_screenwidth()
+        screen_height = self.add_mirror_manager.winfo_screenheight()
+        x = int((screen_width/2) - (width/2))
+        y = int((screen_height/2) - (height/2))
+        self.add_mirror_manager.geometry(f"{width}x{height}+{x}+{y}")
+
+    
+    
+    
+    
+    
+    def edit_mirror_dialog(self):
+        """Show dialog to edit an existing mirror"""
+        selection = self.mirror_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a mirror to edit")
+            return
+        
+        mirror_name = self.mirror_listbox.get(selection[0])
+        urls = self.MIRRORS[mirror_name]
+        
+        self.edit_mirror_manager = tk.Toplevel(self.mirror_manager)
+        self.edit_mirror_manager.title("Edit Mirror")
+        self.edit_mirror_manager.resizable(True, True)
+        
+        # Make dialog stay on top of mirror manager and root
+        self.edit_mirror_manager.transient(self.mirror_manager)
+        self.edit_mirror_manager.grab_set()
+        
+        # Dark theme for the popup
+        self.edit_mirror_manager.tk_setPalette(background='#2d2d2d', foreground='#ffffff',
+                              activeBackground='#3e3e3e', activeForeground='#ffffff')
+        
+        # Create a custom style for the combobox
+        style = ttk.Style()
+        style.theme_use('clam')  # Use 'clam' theme as base
+        
+        # Main container frame
+        main_frame = ttk.Frame(self.edit_mirror_manager)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Name entry
+        ttk.Label(main_frame, text="Mirror Name:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        name_entry = ttk.Entry(main_frame, width=50)
+        name_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+        name_entry.insert(0, mirror_name)
+        
+        # URLs text area
+        ttk.Label(main_frame, text="URLs (one per line):").grid(row=1, column=0, padx=5, pady=5, sticky=tk.NW)
+        urls_text = scrolledtext.ScrolledText(
+            main_frame,
+            width=40,
+            height=10,
+            bg='#3e3e3e',
+            fg='#ffffff',
+            insertbackground='white'
+        )
+        urls_text.grid(row=1, column=1, padx=5, pady=5, sticky=tk.NSEW)  # Changed to NSEW
+        
+        # Insert current URLs
+        if isinstance(urls, list):
+            urls_text.insert(tk.END, '\n'.join(urls))
+        else:
+            urls_text.insert(tk.END, urls)
+        
+        # Button frame
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.grid(row=2, column=1, pady=(10, 5), sticky=tk.EW)  # Changed to EW
+        
+        # Buttons
+        ttk.Button(
+            btn_frame,
+            text="Save",
+            command=lambda: self.edit_mirror(
+                mirror_name,
+                name_entry.get(),
+                urls_text.get("1.0", tk.END).strip().split('\n')
+            ),
+            cursor='hand2'
+        ).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(
+            btn_frame,
+            text="Cancel",
+            command=self.edit_mirror_manager.destroy,
+            cursor='hand2'
+        ).pack(side=tk.LEFT, padx=5)
+        
+        # Configure grid weights for expansion
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(1, weight=1)
+        
+        # Focus name field
+        name_entry.focus_set()
+        
+        # Set initial window size after widgets are placed
+        self.edit_mirror_manager.update_idletasks()  # Update geometry calculations
+        width = max(600, self.edit_mirror_manager.winfo_reqwidth())
+        height = max(400, self.edit_mirror_manager.winfo_reqheight())
+        screen_width = self.edit_mirror_manager.winfo_screenwidth()
+        screen_height = self.edit_mirror_manager.winfo_screenheight()
+        x = int((screen_width/2) - (width/2))
+        y = int((screen_height/2) - (height/2))
+        self.edit_mirror_manager.geometry(f"{width}x{height}+{x}+{y}")
+
+    
+    
+    
+    
+    def add_mirror(self, name, urls):
+        """Add a new mirror to the collection"""
+        if not name or not urls or not any(urls):
+            messagebox.showwarning("Warning", "Please provide both a name and at least one URL")
+            return
+        
+        # Clean up URLs - remove empty lines
+        urls = [url.strip() for url in urls if url.strip()]
+        
+        if name in self.MIRRORS:
+            messagebox.showwarning("Warning", "A mirror with this name already exists")
+            return
+        
+        # Store as list if multiple URLs, otherwise as single string
+        if len(urls) > 1:
+            self.MIRRORS[name] = urls
+        else:
+            self.MIRRORS[name] = urls[0]
+        
+        self.save_settings()
+        self.update_mirror_listbox()
+        self.mirror_manager.focus_get().winfo_toplevel().destroy()  # Close dialog
+
+    def edit_mirror(self, old_name, new_name, urls):
+        """Edit an existing mirror"""
+        if not new_name or not urls or not any(urls):
+            messagebox.showwarning("Warning", "Please provide both a name and at least one URL")
+            return
+        
+        # Clean up URLs - remove empty lines
+        urls = [url.strip() for url in urls if url.strip()]
+        
+        # If name changed, check if new name exists
+        if old_name != new_name and new_name in self.MIRRORS:
+            messagebox.showwarning("Warning", "A mirror with this name already exists")
+            return
+        
+        # Remove old entry if name changed
+        if old_name != new_name:
+            del self.MIRRORS[old_name]
+        
+        # Store as list if multiple URLs, otherwise as single string
+        if len(urls) > 1:
+            self.MIRRORS[new_name] = urls
+        else:
+            self.MIRRORS[new_name] = urls[0]
+        
+        self.save_settings()
+        self.update_mirror_listbox()
+        self.mirror_manager.focus_get().winfo_toplevel().destroy()  # Close dialog
+
+    def remove_mirror(self):
+        """Remove the selected mirror"""
+        selection = self.mirror_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a mirror to remove")
+            return
+        
+        mirror_name = self.mirror_listbox.get(selection[0])
+        
+        if messagebox.askyesno("Confirm", f"Are you sure you want to remove '{mirror_name}'?"):
+            del self.MIRRORS[mirror_name]
+            self.save_settings()
+            self.update_mirror_listbox()
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     
     
     
@@ -651,7 +1155,7 @@ class VPNConfigGUI:
             state="readonly",
             style='TCombobox'
         )
-        self.thread_combo.set("100")  # Default to 100
+        self.thread_combo.set("20")  # Default to 100
         self.thread_combo.pack(pady=5, padx=20, fill=tk.X)
         
         
@@ -661,15 +1165,15 @@ class VPNConfigGUI:
         self.test_url_combo = ttk.Combobox(
             self.mirror_window,
             values=[
+            "https://facebook.com",
             "https://hero-wars.com",
             "https://web.telegram.org",
-            "https://facebook.com",
             "https://netflix.com"
             ],
             state="readonly",
             style='TCombobox'
         )
-        self.test_url_combo.set("https://hero-wars.com")  # Default
+        self.test_url_combo.set("https://facebook.com",)  # Default
         self.test_url_combo.pack(pady=5, padx=20, fill=tk.X)
         
         # Apply dark background to the dropdown lists
@@ -686,14 +1190,16 @@ class VPNConfigGUI:
         ttk.Button(
             button_frame, 
             text="OK", 
-            command=self.on_mirror_selected
+            command=self.on_mirror_selected,
+            cursor='hand2'
         ).pack(side=tk.LEFT, padx=5)
         
         # Cancel button
         ttk.Button(
             button_frame, 
             text="Cancel", 
-            command=self.cancel_mirror_selection
+            command=self.cancel_mirror_selection,
+            cursor='hand2'
         ).pack(side=tk.LEFT, padx=5)
         
         # Handle window close (X button)
@@ -865,9 +1371,9 @@ class VPNConfigGUI:
         
         # Test URL options
         test_url_options = [
+            "https://facebook.com",
             "https://hero-wars.com",
             "https://web.telegram.org",
-            "https://facebook.com",
             "https://netflix.com",
         ]
         
@@ -894,14 +1400,16 @@ class VPNConfigGUI:
         ttk.Button(
             button_frame, 
             text="OK", 
-            command=self.on_speed_test_selected
+            command=self.on_speed_test_selected,
+            cursor='hand2'
         ).pack(side=tk.LEFT, padx=5)
         
         # Cancel button
         ttk.Button(
             button_frame, 
             text="Cancel", 
-            command=self.cancel_speed_test_selection
+            command=self.cancel_speed_test_selection,
+            cursor='hand2'
         ).pack(side=tk.LEFT, padx=5)
         
         # Handle window close (X button)
@@ -1269,19 +1777,206 @@ class VPNConfigGUI:
         self.label.image = self.tk_image  # Keep a reference
     
         
+    
+    
     def paste_configs(self, event=None):
         try:
             clipboard = self.root.clipboard_get()
+            
+            # Check if clipboard is empty or contains only whitespace
+            if not clipboard or not clipboard.strip():
+                self.log("Clipboard is empty - nothing to paste")
+                return
+                
+            # Process non-empty clipboard content
+            configs = [line.strip() for line in clipboard.splitlines() if line.strip()]
+            
+            if not configs:
+                self.log("No valid configs found in clipboard")
+                return
+            
+            # Check if any line starts with supported protocols
+            valid_protocols = ('vmess://', 'vless://', 'ss://', 'trojan://')
+            valid_configs = [config for config in configs if config.startswith(valid_protocols)]
+            
+            if not valid_configs:
+                self.log("No valid protocol configs found")
+                return
+            
             if clipboard.strip():
                 configs = [line.strip() for line in clipboard.splitlines() if line.strip()]
                 if configs:
                     self.log(f"Pasted {len(configs)} config(s) from clipboard")
-                    self._test_pasted_configs(configs)
+                    #self._test_pasted_configs(configs)
+                    self.pasted_configs_to_test = configs  # Store the configs for later testing
+                    self.show_speed_test_selection_for_paste()
         except tk.TclError:
             pass
             
+    
+    
+    
+    def show_speed_test_selection_for_paste(self):
+        """Show speed test selection window specifically for pasted configs"""
+        self.speed_test_window = tk.Toplevel(self.root)
+        self.speed_test_window.title("Select Speed & Test URL")
+        self.speed_test_window.geometry("350x250")
+        self.speed_test_window.resizable(False, False)
+        
+        # Center the window
+        window_width = 350
+        window_height = 200
+        screen_width = self.speed_test_window.winfo_screenwidth()
+        screen_height = self.speed_test_window.winfo_screenheight()
+        x = int((screen_width/2) - (window_width/2))
+        y = int((screen_height/2) - (window_height/2))
+        self.speed_test_window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        
+        # Dark theme for the popup
+        self.speed_test_window.tk_setPalette(background='#2d2d2d', foreground='#ffffff',
+                              activeBackground='#3e3e3e', activeForeground='#ffffff')
+        
+        # Create a custom style for the combobox
+        style = ttk.Style()
+        style.theme_use('clam')  # Use 'clam' theme as base
+        
+        # Configure combobox colors
+        style.configure('TCombobox', 
+                       fieldbackground='#3e3e3e',  # Background of the text field
+                       background='#3e3e3e',       # Background of the dropdown
+                       foreground='#ffffff',       # Text color
+                       selectbackground='#4a6984', # Selection background
+                       selectforeground='#ffffff', # Selection text color
+                       bordercolor='#3e3e3e',     # Border color
+                       lightcolor='#3e3e3e',      # Light part of the border
+                       darkcolor='#3e3e3e')       # Dark part of the border
+        
+        # Configure the dropdown list
+        style.map('TCombobox', 
+                  fieldbackground=[('readonly', '#3e3e3e')],
+                  selectbackground=[('readonly', '#4a6984')],
+                  selectforeground=[('readonly', '#ffffff')],
+                  background=[('readonly', '#3e3e3e')])
+        
+        # Speed selection
+        ttk.Label(self.speed_test_window, text="Select testing speed:").pack(pady=(15, 0))
+        
+        # Speed options with descriptions
+        speed_options = [
+            "Fast (5s timeout)",
+            "Normal (10s timeout)", 
+            "Slow (15s timeout)",
+            "Very Slow (20s timeout)"
+        ]
+        
+        self.speed_combo = ttk.Combobox(
+            self.speed_test_window, 
+            values=speed_options,
+            state="readonly",
+            style='TCombobox'
+        )
+        self.speed_combo.current(1)  # Default to "Normal"
+        self.speed_combo.pack(pady=5, padx=20, fill=tk.X)
+        
+        # Test URL selection
+        ttk.Label(self.speed_test_window, text="Select test URL:").pack(pady=(15, 0))
+        
+        # Test URL options
+        test_url_options = [
+            "https://facebook.com",
+            "https://hero-wars.com",
+            "https://web.telegram.org",
+            "https://netflix.com",
+        ]
+        
+        self.test_url_combo = ttk.Combobox(
+            self.speed_test_window,
+            values=test_url_options,
+            state="readonly",
+            style='TCombobox'
+        )
+        self.test_url_combo.current(0)  # Default to "facebook.com"
+        self.test_url_combo.pack(pady=5, padx=20, fill=tk.X)
+        
+        # Apply dark background to the dropdown lists
+        self.speed_test_window.option_add('*TCombobox*Listbox.background', '#3e3e3e')
+        self.speed_test_window.option_add('*TCombobox*Listbox.foreground', '#ffffff')
+        self.speed_test_window.option_add('*TCombobox*Listbox.selectBackground', '#4a6984')
+        self.speed_test_window.option_add('*TCombobox*Listbox.selectForeground', '#ffffff')
+        
+        # Frame for buttons
+        button_frame = ttk.Frame(self.speed_test_window)
+        button_frame.pack(pady=20)
+        
+        # OK button
+        ttk.Button(
+            button_frame, 
+            text="OK", 
+            command=self.on_speed_test_selected_for_paste,
+            cursor='hand2'
+        ).pack(side=tk.LEFT, padx=5)
+        
+        # Cancel button
+        ttk.Button(
+            button_frame, 
+            text="Cancel", 
+            command=self.cancel_speed_test_selection_for_paste,
+            cursor='hand2'
+        ).pack(side=tk.LEFT, padx=5)
+        
+        # Handle window close (X button)
+        self.speed_test_window.protocol("WM_DELETE_WINDOW", self.cancel_speed_test_selection_for_paste)
+        
+        # Make the window modal
+        self.speed_test_window.grab_set()
+        self.speed_test_window.transient(self.root)
+        self.speed_test_window.wait_window(self.speed_test_window)
+
+    def on_speed_test_selected_for_paste(self):
+        """Handle speed and test URL selection for pasted configs"""
+        selected_speed = self.speed_combo.get()
+        selected_test_url = self.test_url_combo.get()
+        
+        # Map speed selection to timeout values
+        speed_mapping = {
+            "Fast (5s timeout)": 5,
+            "Normal (10s timeout)": 10,
+            "Slow (15s timeout)": 15,
+            "Very Slow (20s timeout)": 20
+        }
+        
+        # Set the timeout based on selection
+        self.latency_timeout = speed_mapping.get(selected_speed, 10)  # Default to 10 if not found
+        
+        # Set the test URL
+        self.test_url = selected_test_url
+        
+        self.log(f"Selected speed: {selected_speed} (timeout: {self.latency_timeout}s)")
+        self.log(f"Selected test URL: {selected_test_url}")
+        
+        self.speed_test_window.destroy()
+        
+        # Now test the pasted configs with selected settings
+        self._test_pasted_configs(self.pasted_configs_to_test)
+        del self.pasted_configs_to_test  # Clean up
+
+    def cancel_speed_test_selection_for_paste(self):
+        """Handle cancel or window close without selection for pasted configs"""
+        if hasattr(self, 'speed_test_window') and self.speed_test_window:
+            self.speed_test_window.destroy()
+        
+        # Clean up the stored configs
+        if hasattr(self, 'pasted_configs_to_test'):
+            del self.pasted_configs_to_test
+    
+    
+    
+    
+    
+    
     def _test_pasted_configs(self, configs):
         self.fetch_btn.config(state=tk.DISABLED)
+        self.reload_btn.config(state=tk.DISABLED)
         self.log("Testing pasted configs...")
         
         thread = threading.Thread(target=self._test_pasted_configs_worker, args=(configs,), daemon=True)
@@ -3025,64 +3720,123 @@ class VPNConfigGUI:
         max_retries = 3
         retry_delay = 2  # seconds
         
-        # Different approaches to try
-        strategies = [
-            ("System default", None),
-            ("Google DNS", self._try_with_google_dns),
-            ("Cloudflare DNS", self._try_with_cloudflare_dns),
-            ("Direct IP", self._try_with_direct_ip),
-        ]
-        
-        for strategy_name, strategy_func in strategies:
-            self.log(f"Trying strategy: {strategy_name}")
+        # Check if current mirror is a list of URLs (yebeke mirror)
+        if isinstance(self.CONFIGS_URL, list):
+            all_configs = []
+            for url in self.CONFIGS_URL:
+                self.log(f"Fetching configs from: {url}")
+                
+                # Different approaches to try for each URL
+                strategies = [
+                    ("System default", None),
+                    ("Google DNS", lambda: self._try_with_google_dns(url)),
+                    ("Cloudflare DNS", lambda: self._try_with_cloudflare_dns(url)),
+                    ("Direct IP", lambda: self._try_with_direct_ip(url)),
+                ]
+                
+                configs_fetched = False
+                for strategy_name, strategy_func in strategies:
+                    self.log(f"Trying strategy: {strategy_name}")
+                    
+                    for attempt in range(max_retries):
+                        try:
+                            if strategy_func:
+                                response = strategy_func()
+                            else:
+                                response = requests.get(url, timeout=10)
+                            
+                            response.raise_for_status()
+                            response.encoding = 'utf-8'
+                            configs = [line.strip() for line in response.text.splitlines() if line.strip()]
+                            all_configs.extend(configs)
+                            self.log(f"Successfully fetched {len(configs)} configs using: {strategy_name}")
+                            configs_fetched = True
+                            break
+                            
+                        except requests.exceptions.Timeout:
+                            if attempt < max_retries - 1:
+                                self.log(f"Timeout, retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                                time.sleep(retry_delay)
+                                continue
+                            self.log(f"Max retries reached with {strategy_name}")
+                            break
+                        except Exception as e:
+                            self.log(f"Error with {strategy_name}: {str(e)}")
+                            break
+                    
+                    if configs_fetched:
+                        break
+                
+                if not configs_fetched:
+                    self.log(f"Failed to fetch configs from: {url}")
             
-            for attempt in range(max_retries):
-                try:
-                    if strategy_func:
-                        response = strategy_func()
-                    else:
-                        response = requests.get(self.CONFIGS_URL, timeout=10)
-                    
-                    response.raise_for_status()
-                    response.encoding = 'utf-8'
-                    configs = [line.strip() for line in response.text.splitlines() if line.strip()]
-                    self.log(f"Successfully fetched configs using: {strategy_name}")
-                    return configs[::-1]
-                    
-                except requests.exceptions.Timeout:
-                    if attempt < max_retries - 1:
-                        self.log(f"Timeout, retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
-                        time.sleep(retry_delay)
-                        continue
-                    self.log(f"Max retries reached with {strategy_name}")
-                    break
-                except Exception as e:
-                    self.log(f"Error with {strategy_name}: {str(e)}")
-                    break
+            return all_configs[::-1] if all_configs else []
         
-        self.log("All strategies failed")
-        return []
+        else:  # Single URL case (original behavior)
+            # Different approaches to try
+            strategies = [
+                ("System default", None),
+                ("Google DNS", self._try_with_google_dns),
+                ("Cloudflare DNS", self._try_with_cloudflare_dns),
+                ("Direct IP", self._try_with_direct_ip),
+            ]
+            
+            for strategy_name, strategy_func in strategies:
+                self.log(f"Trying strategy: {strategy_name}")
+                
+                for attempt in range(max_retries):
+                    try:
+                        if strategy_func:
+                            response = strategy_func()
+                        else:
+                            response = requests.get(self.CONFIGS_URL, timeout=10)
+                        
+                        response.raise_for_status()
+                        response.encoding = 'utf-8'
+                        configs = [line.strip() for line in response.text.splitlines() if line.strip()]
+                        self.log(f"Successfully fetched configs using: {strategy_name}")
+                        return configs[::-1]
+                        
+                    except requests.exceptions.Timeout:
+                        if attempt < max_retries - 1:
+                            self.log(f"Timeout, retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                            time.sleep(retry_delay)
+                            continue
+                        self.log(f"Max retries reached with {strategy_name}")
+                        break
+                    except Exception as e:
+                        self.log(f"Error with {strategy_name}: {str(e)}")
+                        break
+            
+            self.log("All strategies failed")
+            return []
 
-    def _try_with_google_dns(self):
+    
+    
+    
+    
+    def _try_with_google_dns(self, url=None):
         """Try request with Google DNS via system DNS change"""
-        return self._try_with_custom_dns(['8.8.8.8', '8.8.4.4'])
+        target_url = url if url else self.CONFIGS_URL
+        return self._try_with_custom_dns(['8.8.8.8', '8.8.4.4'], target_url)
 
-    def _try_with_cloudflare_dns(self):
+    def _try_with_cloudflare_dns(self, url=None):
         """Try request with Cloudflare DNS via system DNS change"""
-        return self._try_with_custom_dns(['1.1.1.1', '1.0.0.1'])
+        target_url = url if url else self.CONFIGS_URL
+        return self._try_with_custom_dns(['1.1.1.1', '1.0.0.1'], target_url)
 
-    def _try_with_custom_dns(self, dns_servers):
+    def _try_with_custom_dns(self, dns_servers, url):
         """Try request with custom DNS servers"""
         # Create a custom session with DNS override
         session = requests.Session()
         
         # Try to resolve hostname manually using custom DNS
         try:
-            hostname = self.CONFIGS_URL.split('//')[1].split('/')[0]
+            hostname = url.split('//')[1].split('/')[0]
             ip = self._resolve_hostname(hostname, dns_servers[0])
             
             # Replace hostname with IP in URL
-            url_with_ip = self.CONFIGS_URL.replace(hostname, ip)
+            url_with_ip = url.replace(hostname, ip)
             
             # Add Host header to maintain virtual hosting
             headers = {'Host': hostname}
@@ -3090,8 +3844,33 @@ class VPNConfigGUI:
             return session.get(url_with_ip, headers=headers, timeout=10)
         except:
             # Fallback to normal request
-            return session.get(self.CONFIGS_URL, timeout=10)
+            return session.get(url, timeout=10)
 
+    def _try_with_direct_ip(self, url=None):
+        """Try connecting to GitHub's IP directly"""
+        target_url = url if url else self.CONFIGS_URL
+        github_ips = [
+            '140.82.112.3',  # Common GitHub IP
+            '140.82.114.3',  # Alternative GitHub IP
+            '140.82.113.3',  # Another GitHub IP
+            '140.82.121.4' 
+        ]
+        
+        hostname = target_url.split('//')[1].split('/')[0]
+        
+        for ip in github_ips:
+            try:
+                url_with_ip = target_url.replace(hostname, ip)
+                headers = {'Host': hostname}
+                response = requests.get(url_with_ip, headers=headers, timeout=10)
+                return response
+            except:
+                continue
+        
+        raise Exception("All direct IP attempts failed")
+    
+    
+    
     def _resolve_hostname(self, hostname, dns_server):
         """Resolve hostname using specific DNS server"""
         try:
@@ -3126,27 +3905,7 @@ class VPNConfigGUI:
         # Final fallback - use socket with default DNS
         return socket.gethostbyname(hostname)
 
-    def _try_with_direct_ip(self):
-        """Try connecting to GitHub's IP directly"""
-        github_ips = [
-            '140.82.112.3',  # Common GitHub IP
-            '140.82.114.3',  # Alternative GitHub IP
-            '140.82.113.3',  # Another GitHub IP
-            '140.82.121.4' 
-        ]
-        
-        hostname = self.CONFIGS_URL.split('//')[1].split('/')[0]
-        
-        for ip in github_ips:
-            try:
-                url_with_ip = self.CONFIGS_URL.replace(hostname, ip)
-                headers = {'Host': hostname}
-                response = requests.get(url_with_ip, headers=headers, timeout=10)
-                return response
-            except:
-                continue
-        
-        raise Exception("All direct IP attempts failed")
+    
 
 def main():
     if is_program_running():

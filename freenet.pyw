@@ -2128,41 +2128,41 @@ class VPNConfigGUI:
     
     
     def kill_existing_xray_processes(self):
-        """Kill any existing freenet processes"""
+        """Kill any existing Xray processes"""
         try:
-            #self.log("Checking for existing freenet processes...")
+            #self.log("Checking for existing Xray processes...")
             
             if platform.system() == "Windows":
                 # Windows: use taskkill
                 try:
-                    result = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq freenet*'], 
+                    result = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq xray*'], 
                                           capture_output=True, text=True, 
                                           creationflags=subprocess.CREATE_NO_WINDOW)
-                    if 'freenet' in result.stdout.lower():
-                        self.log("Found running freenet processes, terminating...")
-                        subprocess.run(['taskkill', '/F', '/IM', 'freenet*'], 
+                    if 'xray' in result.stdout.lower():
+                        self.log("Found running Xray processes, terminating...")
+                        subprocess.run(['taskkill', '/F', '/IM', 'xray*'], 
                                      capture_output=True,
                                      creationflags=subprocess.CREATE_NO_WINDOW)
                         time.sleep(2)  # Give processes time to terminate
-                        self.log("Freenet processes terminated")
+                        self.log("Xray processes terminated")
                 except Exception as e:
-                    self.log(f"Error killing freenet processes on Windows: {str(e)}")
+                    self.log(f"Error killing Xray processes on Windows: {str(e)}")
             else:
                 # Unix-like systems: use pkill
                 try:
-                    result = subprocess.run(['pgrep', '-f', 'freenet'], 
+                    result = subprocess.run(['pgrep', '-f', 'xray'], 
                                           capture_output=True, text=True)
                     if result.stdout.strip():
-                        self.log("Found running freenet processes, terminating...")
-                        subprocess.run(['pkill', '-f', 'freenet'], 
+                        self.log("Found running Xray processes, terminating...")
+                        subprocess.run(['pkill', '-f', 'xray'], 
                                      capture_output=True)
                         time.sleep(2)  # Give processes time to terminate
-                        self.log("Freenet processes terminated")
+                        self.log("Xray processes terminated")
                 except Exception as e:
-                    self.log(f"Error killing freenet processes on Unix: {str(e)}")
+                    self.log(f"Error killing Xray processes on Unix: {str(e)}")
                     
         except Exception as e:
-            self.log(f"Error in kill_existing_freenet_processes: {str(e)}")
+            self.log(f"Error in kill_existing_xray_processes: {str(e)}")
             
             
     

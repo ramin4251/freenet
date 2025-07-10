@@ -2143,7 +2143,7 @@ class VPNConfigGUI:
                         subprocess.run(['taskkill', '/F', '/IM', 'xray*'], 
                                      capture_output=True,
                                      creationflags=subprocess.CREATE_NO_WINDOW)
-                        time.sleep(2)  # Give processes time to terminate
+                        #time.sleep(2)  # Give processes time to terminate
                         self.log("Xray processes terminated")
                 except Exception as e:
                     self.log(f"Error killing Xray processes on Windows: {str(e)}")
@@ -2156,7 +2156,7 @@ class VPNConfigGUI:
                         self.log("Found running Xray processes, terminating...")
                         subprocess.run(['pkill', '-f', 'xray'], 
                                      capture_output=True)
-                        time.sleep(2)  # Give processes time to terminate
+                        #time.sleep(2)  # Give processes time to terminate
                         self.log("Xray processes terminated")
                 except Exception as e:
                     self.log(f"Error killing Xray processes on Unix: {str(e)}")

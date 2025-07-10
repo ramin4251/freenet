@@ -26,7 +26,8 @@ import qrcode
 import zipfile
 import shutil
 import io
-
+import signal
+from typing import List, Optional
 from contextlib import contextmanager
 from PIL import ImageTk, Image
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -98,6 +99,171 @@ def is_program_running():
 
 
 
+
+
+
+
+
+def get_platform_info():
+    """Get platform information"""
+    system = platform.system().lower()
+    return {
+        'system': system,
+        'is_windows': system == 'windows',
+        'is_linux': system == 'linux',
+        'is_macos': system == 'darwin'
+    }
+
+def find_xray_processes() -> List[psutil.Process]:
+    """Find all Xray processes that the current user can access"""
+    xray_processes = []
+    current_user = None
+    
+    try:
+        current_user = psutil.Process().username()
+    except:
+        pass
+    
+    for proc in psutil.process_iter(['pid', 'name', 'exe', 'cmdline', 'username']):
+        try:
+            info = proc.info
+            
+            # Skip processes we can't access
+            if current_user and info.get('username') != current_user:
+                continue
+            
+            # Safely check process attributes with proper None handling
+            name = str(info.get('name', '') or '').lower()
+            exe = str(info.get('exe', '') or '').lower()
+            cmdline = info.get('cmdline', []) or []
+            cmdline_str = ' '.join(str(arg) for arg in cmdline).lower()
+            
+            # Check for Xray in any of the attributes
+            if ('xray' in name or 
+                'xray' in exe or 
+                'xray' in cmdline_str):
+                xray_processes.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
+            continue
+    return xray_processes
+
+def silent_kill_process(proc: psutil.Process, timeout: int = 5) -> bool:
+    """Try to kill a process silently without any output"""
+    try:
+        # Try SIGTERM first (graceful shutdown)
+        proc.terminate()
+        
+        # Wait for graceful shutdown
+        try:
+            proc.wait(timeout=timeout)
+            return True
+        except psutil.TimeoutExpired:
+            pass
+        
+        # If still running, try SIGKILL
+        if proc.is_running():
+            proc.kill()
+            try:
+                proc.wait(timeout=2)
+                return True
+            except psutil.TimeoutExpired:
+                pass
+                
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return True  # Process already gone or we can't access it
+    
+    return False
+
+def kill_user_xray_processes() -> int:
+    """Kill only Xray processes owned by current user silently"""
+    killed_count = 0
+    killed_pids = set()
+    
+    # Find all accessible Xray processes
+    xray_processes = find_xray_processes()
+    
+    if not xray_processes:
+        return 0
+    
+    # Try to kill each process
+    for proc in xray_processes:
+        try:
+            if proc.pid in killed_pids:
+                continue
+                
+            if silent_kill_process(proc):
+                killed_pids.add(proc.pid)
+                killed_count += 1
+                
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    
+    return killed_count
+
+def silent_system_kill():
+    """Try system commands silently without showing windows"""
+    platform_info = get_platform_info()
+    success = False
+    
+    if platform_info['is_windows']:
+        # Windows: Run commands silently
+        commands = [
+            ['taskkill', '/IM', 'xray.exe'],
+            ['taskkill', '/IM', 'xray*'],
+        ]
+        
+        for cmd in commands:
+            try:
+                # Use CREATE_NO_WINDOW flag to prevent console window
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=10,
+                    startupinfo=startupinfo,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                
+                if result.returncode == 0:
+                    success = True
+            except:
+                pass
+    
+    else:  # Linux/macOS
+        commands = [
+            ['killall', 'xray'],
+            ['pkill', '-f', 'xray'],
+            ['pkill', '-u', os.getenv('USER', 'unknown'), '-f', 'xray']
+        ]
+        
+        for cmd in commands:
+            try:
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode == 0:
+                    success = True
+            except:
+                pass
+    
+    return success
+
+
+
+
+
+
+
+
 def kill_xray_processes():
     """Kill any existing Xray processes (cross-platform)"""
     try:
@@ -119,6 +285,20 @@ def kill_xray_processes():
                          stderr=subprocess.DEVNULL)
     except Exception as e:
         self.log(f"Error killing existing Xray processes: {str(e)}")
+    
+    
+        # Kill processes once
+    kill_user_xray_processes()
+    
+    # Try system commands
+    silent_system_kill()
+
+
+
+
+
+
+
 
 
 class VPNConfigGUI:
@@ -128,7 +308,7 @@ class VPNConfigGUI:
         self.root.geometry("600x600+620+20")
         
         
-        atexit.register(self.kill_existing_xray_processes)
+        atexit.register(kill_xray_processes)
         
         
         self.latency_timeout = 10
@@ -139,7 +319,7 @@ class VPNConfigGUI:
         self.update_type = None  # Track what's being updated
         
         
-        self.current_version = "2"
+        self.current_version = "2.1"
 
         # Define BASE_DIR at the beginning of __init__
         self.BASE_DIR = os.getcwd()
@@ -148,8 +328,7 @@ class VPNConfigGUI:
         # Configure dark theme
         self.setup_dark_theme()
         
-        # Kill any existing Xray processes
-        self.kill_existing_xray_processes()
+        
         
         
         self.log_queue = queue.Queue()
@@ -261,7 +440,8 @@ class VPNConfigGUI:
                 self.log("No configs found in best_configs.txt")
                 pass
         
-        #self.check_internet_connection()
+        # Kill any existing Xray processes
+        # self.kill_existing_xray_processes()
         
         
     def setup_dark_theme(self):
@@ -471,31 +651,306 @@ class VPNConfigGUI:
         menubar = tk.Menu(self.root)
         
         # File menu
-        file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="Exit", command=self.root.quit)
-        menubar.add_cascade(label="File", menu=file_menu)
+        self.file_menu = tk.Menu(menubar, tearoff=0)
+        self.file_menu.add_command(label="Exit", command=self.root.quit)
+        menubar.add_cascade(label="File", menu=self.file_menu)
         
         # Options menu
-        options_menu = tk.Menu(menubar, tearoff=0)
+        self.options_menu = tk.Menu(menubar, tearoff=0)
         
-        options_menu.add_command(label="Manage Mirrors", command=self.show_mirror_manager)
-        options_menu.add_command(label="--------------", state="disabled")
-        options_menu.add_command(label="Update freenet", command=self.update_freenet)
-        options_menu.add_command(label="Update Xray Core", command=self.update_xray_core)
-        options_menu.add_command(label="Update GeoFiles", command=self.update_geofiles)
-        menubar.add_cascade(label="Options", menu=options_menu)
+        self.options_menu.add_command(label="Manage Mirrors", command=self.show_mirror_manager)
+        self.options_menu.add_command(label="--------------", state="disabled")
+        self.options_menu.add_command(label="Update freenet", command=self.update_freenet)
+        self.options_menu.add_command(label="Update Xray Core", command=self.update_xray_core)
+        self.options_menu.add_command(label="Update GeoFiles", command=self.update_geofiles)
+        menubar.add_cascade(label="Options", menu=self.options_menu)
         
         
         # Tools menu
-        tools_menu = tk.Menu(menubar, tearoff=0)
-        tools_menu.add_command(label="Clear Terminal", command=self.clear_terminal)
-        menubar.add_cascade(label="Tools", menu=tools_menu)
+        self.tools_menu = tk.Menu(menubar, tearoff=0)
+        self.tools_menu.add_command(label="Set HTTP Proxy", command=self.toggle_http_proxy)
+        self.tools_menu.add_command(label="--------------", state="disabled")
+        self.tools_menu.add_command(label="Clear Terminal", command=self.clear_terminal)
+        menubar.add_cascade(label="Tools", menu=self.tools_menu)
         
         self.root.config(menu=menubar)
         
         
         
         
+    
+    
+    
+    
+    
+    
+    
+    def toggle_http_proxy(self):
+        proxy_address = "http://127.0.0.1:1080"
+        
+        if self.tools_menu.entrycget(0, "label") == "Set HTTP Proxy":
+            success = self.set_proxy_variables()
+            if success:
+                self.tools_menu.entryconfig(0, label="Unset HTTP Proxy")
+                messagebox.showinfo("Success", f"HTTP Proxy has been set to {proxy_address}")
+        else:
+            success = self.unset_proxy_variables()
+            if success:
+                self.tools_menu.entryconfig(0, label="Set HTTP Proxy")
+                messagebox.showinfo("Success", "HTTP Proxy has been unset")
+    
+    
+    
+    def set_proxy_variables(self):
+        proxy_address = "http://127.0.0.1:1080"
+        
+        try:
+            # Set environment variables for the current process
+            os.environ['HTTP_PROXY'] = proxy_address
+            os.environ['HTTPS_PROXY'] = proxy_address
+            
+            print(f"Set HTTP_PROXY and HTTPS_PROXY to {proxy_address} for current process")
+            
+            # Platform-specific persistent configuration
+            system = platform.system().lower()
+            
+            if system == 'windows':
+                self.set_windows_persistent(proxy_address)
+            elif system in ['linux', 'darwin']:  # darwin is macOS
+                self.set_unix_persistent(proxy_address)
+            else:
+                print(f"Unsupported operating system: {system}")
+                print("Only set variables for current process.")
+            
+            return True
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to set HTTP Proxy: {str(e)}")
+            return False
+
+    
+    
+    
+    
+    def set_windows_persistent(self, proxy_address):
+        try:
+            import winreg
+            # Set for current user
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
+                              'Environment', 
+                              0, winreg.KEY_WRITE) as key:
+                winreg.SetValueEx(key, 'HTTP_PROXY', 0, winreg.REG_SZ, proxy_address)
+                winreg.SetValueEx(key, 'HTTPS_PROXY', 0, winreg.REG_SZ, proxy_address)
+            print("Persistently set proxy variables in Windows Registry (current user)")
+            
+            # Broadcast the change (requires Windows)
+            try:
+                import ctypes
+                HWND_BROADCAST = 0xFFFF
+                WM_SETTINGCHANGE = 0x001A
+                SMTO_ABORTIFHUNG = 0x0002
+                result = ctypes.c_long()
+                ctypes.windll.user32.SendMessageTimeoutW(
+                    HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                    "Environment", SMTO_ABORTIFHUNG, 5000, ctypes.byref(result))
+            except:
+                print("Note: You may need to restart your session for changes to take full effect")
+                
+        except ImportError:
+            print("Could not import winreg module - only set variables for current process")
+        except Exception as e:
+            print(f"Error setting Windows registry: {e}")
+
+    
+    
+    
+    def set_unix_persistent(self, proxy_address):
+        shell_config_files = []
+        home = os.path.expanduser("~")
+        
+        # Determine which shell config files to update
+        shell = os.path.basename(os.getenv('SHELL', ''))
+        if not shell:
+            # Default to common shells if SHELL not set
+            shell_config_files = [
+                os.path.join(home, '.bashrc'),
+                os.path.join(home, '.zshrc'),
+                os.path.join(home, '.profile')
+            ]
+        else:
+            if 'bash' in shell:
+                shell_config_files.append(os.path.join(home, '.bashrc'))
+            elif 'zsh' in shell:
+                shell_config_files.append(os.path.join(home, '.zshrc'))
+            shell_config_files.append(os.path.join(home, '.profile'))
+        
+        # Add proxy settings to config files
+        proxy_lines = [
+            f'\nexport HTTP_PROXY="{proxy_address}"',
+            f'export HTTPS_PROXY="{proxy_address}"\n'
+        ]
+        
+        updated = False
+        for config_file in shell_config_files:
+            try:
+                # Check if the file exists
+                if not os.path.exists(config_file):
+                    continue
+                    
+                # Check if proxy settings already exist
+                with open(config_file, 'r') as f:
+                    content = f.read()
+                    if any(proxy_line.strip() in content for proxy_line in proxy_lines):
+                        print(f"Proxy settings already exist in {config_file}")
+                        continue
+                
+                # Append proxy settings
+                with open(config_file, 'a') as f:
+                    f.write('\n# Added by Python proxy configuration script\n')
+                    f.write('\n'.join(proxy_lines))
+                    print(f"Added proxy settings to {config_file}")
+                    updated = True
+                    
+            except Exception as e:
+                print(f"Error updating {config_file}: {e}")
+        
+        if updated:
+            print("\nYou may need to run 'source ~/.bashrc' (or your shell config) "
+                  "or start a new terminal session for changes to take effect.")
+        else:
+            print("Could not update any shell configuration files automatically.")
+            print("You may need to manually add these lines to your shell config:")
+            print('\n'.join(proxy_lines))
+    
+    
+    
+    def unset_proxy_variables(self):
+        try:
+            # Remove environment variables for the current process
+            os.environ.pop('HTTP_PROXY', None)
+            os.environ.pop('HTTPS_PROXY', None)
+            
+            print("Unset HTTP_PROXY and HTTPS_PROXY for current process")
+            
+            # Platform-specific persistent configuration removal
+            system = platform.system().lower()
+            
+            if system == 'windows':
+                self.unset_windows_persistent()
+            elif system in ['linux', 'darwin']:  # darwin is macOS
+                self.unset_unix_persistent()
+            else:
+                print(f"Unsupported operating system: {system}")
+                print("Only unset variables for current process.")
+            
+            return True
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to unset HTTP Proxy: {str(e)}")
+            return False
+
+    
+    
+    
+    
+    
+    
+    def unset_windows_persistent(self):
+        try:
+            import winreg
+            # Remove for current user
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
+                              'Environment', 
+                              0, winreg.KEY_WRITE) as key:
+                try:
+                    winreg.DeleteValue(key, 'HTTP_PROXY')
+                except WindowsError:
+                    pass
+                try:
+                    winreg.DeleteValue(key, 'HTTPS_PROXY')
+                except WindowsError:
+                    pass
+            
+            print("Persistently unset proxy variables in Windows Registry (current user)")
+            
+            # Broadcast the change (requires Windows)
+            try:
+                import ctypes
+                HWND_BROADCAST = 0xFFFF
+                WM_SETTINGCHANGE = 0x001A
+                SMTO_ABORTIFHUNG = 0x0002
+                result = ctypes.c_long()
+                ctypes.windll.user32.SendMessageTimeoutW(
+                    HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                    "Environment", SMTO_ABORTIFHUNG, 5000, ctypes.byref(result))
+            except:
+                print("Note: You may need to restart your session for changes to take full effect")
+                
+        except ImportError:
+            print("Could not import winreg module - only unset variables for current process")
+        except Exception as e:
+            print(f"Error modifying Windows registry: {e}")
+
+    def unset_unix_persistent(self):
+        shell_config_files = []
+        home = os.path.expanduser("~")
+        
+        # Determine which shell config files to update
+        shell = os.path.basename(os.getenv('SHELL', ''))
+        if not shell:
+            # Default to common shells if SHELL not set
+            shell_config_files = [
+                os.path.join(home, '.bashrc'),
+                os.path.join(home, '.zshrc'),
+                os.path.join(home, '.profile')
+            ]
+        else:
+            if 'bash' in shell:
+                shell_config_files.append(os.path.join(home, '.bashrc'))
+            elif 'zsh' in shell:
+                shell_config_files.append(os.path.join(home, '.zshrc'))
+            shell_config_files.append(os.path.join(home, '.profile'))
+        
+        # Proxy lines to remove
+        proxy_lines = [
+            'export HTTP_PROXY="127.0.0.1:1080"',
+            'export HTTPS_PROXY="127.0.0.1:1080"',
+            '# Added by Python proxy configuration script'
+        ]
+        
+        updated = False
+        for config_file in shell_config_files:
+            try:
+                # Check if the file exists
+                if not os.path.exists(config_file):
+                    continue
+                    
+                # Read current content
+                with open(config_file, 'r') as f:
+                    lines = f.readlines()
+                    
+                # Filter out proxy-related lines
+                new_lines = [line for line in lines if not any(proxy_line in line for proxy_line in proxy_lines)]
+                
+                # If content changed, write back
+                if len(new_lines) != len(lines):
+                    with open(config_file, 'w') as f:
+                        f.writelines(new_lines)
+                    print(f"Removed proxy settings from {config_file}")
+                    updated = True
+                    
+            except Exception as e:
+                print(f"Error updating {config_file}: {e}")
+        
+        if updated:
+            print("\nYou may need to run 'source ~/.bashrc' (or your shell config) "
+                  "or start a new terminal session for changes to take effect.")
+        else:
+            print("No proxy settings found in shell configuration files.")
+    
+    
+    
+    
     
     
     
@@ -1673,26 +2128,41 @@ class VPNConfigGUI:
     
     
     def kill_existing_xray_processes(self):
-        """Kill any existing Xray processes (cross-platform)"""
+        """Kill any existing freenet processes"""
         try:
-            if sys.platform == 'win32':
-                # Windows implementation
-                import psutil
-                for proc in psutil.process_iter(['name']):
-                    try:
-                        if proc.info['name'].lower() == 'xray.exe':
-                            proc.kill()
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
+            #self.log("Checking for existing freenet processes...")
+            
+            if platform.system() == "Windows":
+                # Windows: use taskkill
+                try:
+                    result = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq freenet*'], 
+                                          capture_output=True, text=True, 
+                                          creationflags=subprocess.CREATE_NO_WINDOW)
+                    if 'freenet' in result.stdout.lower():
+                        self.log("Found running freenet processes, terminating...")
+                        subprocess.run(['taskkill', '/F', '/IM', 'freenet*'], 
+                                     capture_output=True,
+                                     creationflags=subprocess.CREATE_NO_WINDOW)
+                        time.sleep(2)  # Give processes time to terminate
+                        self.log("Freenet processes terminated")
+                except Exception as e:
+                    self.log(f"Error killing freenet processes on Windows: {str(e)}")
             else:
-                # Linux/macOS implementation
-                import signal
-                import subprocess
-                subprocess.run(['pkill', '-f', 'xray'], 
-                             stdout=subprocess.DEVNULL, 
-                             stderr=subprocess.DEVNULL)
+                # Unix-like systems: use pkill
+                try:
+                    result = subprocess.run(['pgrep', '-f', 'freenet'], 
+                                          capture_output=True, text=True)
+                    if result.stdout.strip():
+                        self.log("Found running freenet processes, terminating...")
+                        subprocess.run(['pkill', '-f', 'freenet'], 
+                                     capture_output=True)
+                        time.sleep(2)  # Give processes time to terminate
+                        self.log("Freenet processes terminated")
+                except Exception as e:
+                    self.log(f"Error killing freenet processes on Unix: {str(e)}")
+                    
         except Exception as e:
-            self.log(f"Error killing existing Xray processes: {str(e)}")
+            self.log(f"Error in kill_existing_freenet_processes: {str(e)}")
             
             
     
@@ -2302,7 +2772,9 @@ class VPNConfigGUI:
     
     def fetch_and_test_configs(self):
     
-        kill_xray_processes()
+        #self.kill_existing_xray_processes()
+        
+        
         """Toggle between fetching and stopping"""
         if not self.is_fetching:
             # Start fetching
@@ -2404,6 +2876,8 @@ class VPNConfigGUI:
             self.root.after(0, self.update_treeview)
             self.log(f"Testing complete! Found {len(new_working_configs)} new working configs")
             
+            
+            
         except Exception as e:
             if not self.stop_event.is_set():
                 self.log(f"Error in fetch and test: {str(e)}")
@@ -2423,7 +2897,7 @@ class VPNConfigGUI:
                 self.root.after(0, lambda: self.progress.config(value=0))
                 self.is_fetching = False
 
-            
+            self.kill_existing_xray_processes()
     
     
     
@@ -2495,7 +2969,7 @@ class VPNConfigGUI:
     
     def connect_config(self):
     
-        kill_xray_processes()
+        self.kill_existing_xray_processes()
         """Connect to the selected config"""
         self.update_connection_status(True)
         
@@ -3924,7 +4398,7 @@ def main():
     #    sys.exit(1)
     
     # Kill any existing Xray processes
-    kill_xray_processes()
+    # kill_xray_processes()
     
     # Create root window
     root = tk.Tk()

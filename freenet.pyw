@@ -251,7 +251,15 @@ class VPNConfigGUI:
         
         # Load best configs if file exists
         if os.path.exists(self.BEST_CONFIGS_FILE):
-            self.load_best_configs()
+            try:
+                with open(self.BEST_CONFIGS_FILE, 'r') as f:
+                    # Check if file has at least one non-empty line
+                    if any(line.strip() for line in f):
+                        self.load_best_configs()
+            except (IOError, OSError):
+                # Handle file read errors gracefully
+                self.log("No configs found in best_configs.txt")
+                pass
         
         #self.check_internet_connection()
         
@@ -1468,6 +1476,7 @@ class VPNConfigGUI:
             style='TButton',
             state=tk.NORMAL
         )
+        self.fetch_btn.config(state=tk.NORMAL)
 
     # Modified load_best_configs to show popup first
     def load_best_configs(self):
@@ -1517,6 +1526,7 @@ class VPNConfigGUI:
                         style='TButton',
                         state=tk.NORMAL
                     ))
+                    self.fetch_btn.config(state=tk.NORMAL)
                     self.log("No configs found in best_configs.txt")
                     return
                 
